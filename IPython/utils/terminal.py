@@ -9,46 +9,29 @@ Authors:
 * Alexander Belchenko (e-mail: bialix AT ukr.net)
 """
 
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
-
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
 import os
-import struct
 import sys
 import warnings
-
-#-----------------------------------------------------------------------------
-# Code
-#-----------------------------------------------------------------------------
+from shutil import get_terminal_size as _get_terminal_size
 
 # This variable is part of the expected API of the module:
 ignore_termtitle = True
 
 
-def _term_clear():
-    pass
-
 
 if os.name == 'posix':
     def _term_clear():
         os.system('clear')
-
-
-if sys.platform == 'win32':
+elif sys.platform == 'win32':
     def _term_clear():
         os.system('cls')
+else:
+    def _term_clear():
+        pass
 
-
-def term_clear():
-    _term_clear()
 
 
 def toggle_set_term_title(val):
@@ -62,7 +45,7 @@ def toggle_set_term_title(val):
 
     Parameters
     ----------
-      val : bool
+    val : bool
         If True, set_term_title() actually writes to the terminal (using the
         appropriate platform-specific module).  If False, it is a no-op.
     """
@@ -75,41 +58,47 @@ def _set_term_title(*args,**kw):
     pass
 
 
+def _restore_term_title():
+    pass
+
+
+_xterm_term_title_saved = False
+
+
 def _set_term_title_xterm(title):
     """ Change virtual terminal title in xterm-workalikes """
+    global _xterm_term_title_saved
+    # Only save the title the first time we set, otherwise restore will only
+    # go back one title (probably undoing a %cd title change).
+    if not _xterm_term_title_saved:
+        # save the current title to the xterm "stack"
+        sys.stdout.write("\033[22;0t")
+        _xterm_term_title_saved = True
     sys.stdout.write('\033]0;%s\007' % title)
+
+
+def _restore_term_title_xterm():
+    # Make sure the restore has at least one accompanying set.
+    global _xterm_term_title_saved
+    assert _xterm_term_title_saved
+    sys.stdout.write('\033[23;0t') 
+    _xterm_term_title_saved = False
+
 
 if os.name == 'posix':
     TERM = os.environ.get('TERM','')
     if TERM.startswith('xterm'):
         _set_term_title = _set_term_title_xterm
+        _restore_term_title = _restore_term_title_xterm
+elif sys.platform == 'win32':
+    import ctypes
 
+    SetConsoleTitleW = ctypes.windll.kernel32.SetConsoleTitleW
+    SetConsoleTitleW.argtypes = [ctypes.c_wchar_p]
 
-if sys.platform == 'win32':
-    try:
-        import ctypes
-
-        SetConsoleTitleW = ctypes.windll.kernel32.SetConsoleTitleW
-        SetConsoleTitleW.argtypes = [ctypes.c_wchar_p]
-    
-        def _set_term_title(title):
-            """Set terminal title using ctypes to access the Win32 APIs."""
-            SetConsoleTitleW(title)
-    except ImportError:
-        def _set_term_title(title):
-            """Set terminal title using the 'title' command."""
-            global ignore_termtitle
-
-            try:
-                # Cannot be on network share when issuing system commands
-                curr = os.getcwdu()
-                os.chdir("C:")
-                ret = os.system("title " + title)
-            finally:
-                os.chdir(curr)
-            if ret:
-                # non-zero return code signals error, don't try again
-                ignore_termtitle = True
+    def _set_term_title(title):
+        """Set terminal title using ctypes to access the Win32 APIs."""
+        SetConsoleTitleW(title)
 
 
 def set_term_title(title):
@@ -119,6 +108,13 @@ def set_term_title(title):
     _set_term_title(title)
 
 
+def restore_term_title():
+    """Restore, if possible, terminal title to the original state"""
+    if ignore_termtitle:
+        return
+    _restore_term_title()
+
+
 def freeze_term_title():
     warnings.warn("This function is deprecated, use toggle_set_term_title()")
     global ignore_termtitle
@@ -126,37 +122,4 @@ def freeze_term_title():
 
 
 def get_terminal_size(defaultx=80, defaulty=25):
-    return defaultx, defaulty
-
-
-if sys.platform == 'win32':
-    def get_terminal_size(defaultx=80, defaulty=25):
-        """Return size of current terminal console.
-
-        This function try to determine actual size of current working
-        console window and return tuple (sizex, sizey) if success,
-        or default size (defaultx, defaulty) otherwise.
-
-        Dependencies: ctypes should be installed.
-
-        Author: Alexander Belchenko (e-mail: bialix AT ukr.net)
-        """
-        try:
-            import ctypes
-        except ImportError:
-            return defaultx, defaulty
-
-        h = ctypes.windll.kernel32.GetStdHandle(-11)
-        csbi = ctypes.create_string_buffer(22)
-        res = ctypes.windll.kernel32.GetConsoleScreenBufferInfo(h, csbi)
-
-        if res:
-            (bufx, bufy, curx, cury, wattr,
-             left, top, right, bottom, maxx, maxy) = struct.unpack(
-                "hhhhHhhhhhh", csbi.raw)
-            sizex = right - left + 1
-            sizey = bottom - top + 1
-            return (sizex, sizey)
-        else:
-            return (defaultx, defaulty)
-
+    return _get_terminal_size((defaultx, defaulty))

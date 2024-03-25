@@ -1,37 +1,18 @@
 # encoding: utf-8
-"""
-An object for managing IPython profile directories.
+"""An object for managing IPython profile directories."""
 
-Authors:
-
-* Brian Granger
-* Fernando Perez
-* Min RK
-
-"""
-
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
-
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
 import os
 import shutil
+import errno
+from pathlib import Path
 
-from IPython.config.configurable import LoggingConfigurable
-from IPython.utils.path import get_ipython_package_dir, expand_path
-from IPython.utils.traitlets import Unicode, Bool
-
-#-----------------------------------------------------------------------------
-# Classes and functions
-#-----------------------------------------------------------------------------
-
+from traitlets.config.configurable import LoggingConfigurable
+from ..paths import get_ipython_package_dir
+from ..utils.path import expand_path, ensure_dir_exists
+from traitlets import Unicode, Bool, observe
 
 #-----------------------------------------------------------------------------
 # Module errors
@@ -59,40 +40,40 @@ class ProfileDir(LoggingConfigurable):
     log_dir_name = Unicode('log')
     startup_dir_name = Unicode('startup')
     pid_dir_name = Unicode('pid')
+    static_dir_name = Unicode('static')
     security_dir = Unicode(u'')
     log_dir = Unicode(u'')
     startup_dir = Unicode(u'')
     pid_dir = Unicode(u'')
+    static_dir = Unicode(u'')
 
-    location = Unicode(u'', config=True,
+    location = Unicode(u'',
         help="""Set the profile location directly. This overrides the logic used by the
         `profile` option.""",
-        )
+        ).tag(config=True)
 
     _location_isset = Bool(False) # flag for detecting multiply set location
-
-    def _location_changed(self, name, old, new):
+    @observe('location')
+    def _location_changed(self, change):
         if self._location_isset:
             raise RuntimeError("Cannot set profile location more than once.")
         self._location_isset = True
-        if not os.path.isdir(new):
-            os.makedirs(new)
-        
+        new = change['new']
+        ensure_dir_exists(new)
+
         # ensure config files exist:
         self.security_dir = os.path.join(new, self.security_dir_name)
         self.log_dir = os.path.join(new, self.log_dir_name)
         self.startup_dir = os.path.join(new, self.startup_dir_name)
         self.pid_dir = os.path.join(new, self.pid_dir_name)
+        self.static_dir = os.path.join(new, self.static_dir_name)
         self.check_dirs()
-
-    def _log_dir_changed(self, name, old, new):
-        self.check_log_dir()
     
     def _mkdir(self, path, mode=None):
         """ensure a directory exists at a given path
-        
+
         This is a version of os.mkdir, with the following differences:
-        
+
         - returns True if it created the directory, False otherwise
         - ignores EEXIST, protecting against race conditions where
           the dir may have been created in between the check and
@@ -104,7 +85,7 @@ class ProfileDir(LoggingConfigurable):
                 try:
                     os.chmod(path, mode)
                 except OSError:
-                    self.log.warn(
+                    self.log.warning(
                         "Could not set permissions on %s",
                         path
                     )
@@ -119,37 +100,32 @@ class ProfileDir(LoggingConfigurable):
                 return False
             else:
                 raise
-        
+
         return True
-
-    def check_log_dir(self):
+    
+    @observe('log_dir')
+    def check_log_dir(self, change=None):
         self._mkdir(self.log_dir)
-
-    def _startup_dir_changed(self, name, old, new):
-        self.check_startup_dir()
-
-    def check_startup_dir(self):
+    
+    @observe('startup_dir')
+    def check_startup_dir(self, change=None):
         self._mkdir(self.startup_dir)
 
         readme = os.path.join(self.startup_dir, 'README')
-        src = os.path.join(get_ipython_package_dir(), u'config', u'profile', u'README_STARTUP')
+        src = os.path.join(get_ipython_package_dir(), u'core', u'profile', u'README_STARTUP')
 
         if not os.path.exists(src):
-            self.log.warn("Could not copy README_STARTUP to startup dir. Source file %s does not exist.", src)
+            self.log.warning("Could not copy README_STARTUP to startup dir. Source file %s does not exist.", src)
 
         if os.path.exists(src) and not os.path.exists(readme):
             shutil.copy(src, readme)
 
-    def _security_dir_changed(self, name, old, new):
-        self.check_security_dir()
-
-    def check_security_dir(self):
+    @observe('security_dir')
+    def check_security_dir(self, change=None):
         self._mkdir(self.security_dir, 0o40700)
 
-    def _pid_dir_changed(self, name, old, new):
-        self.check_pid_dir()
-
-    def check_pid_dir(self):
+    @observe('pid_dir')
+    def check_pid_dir(self, change=None):
         self._mkdir(self.pid_dir, 0o40700)
 
     def check_dirs(self):
@@ -158,19 +134,20 @@ class ProfileDir(LoggingConfigurable):
         self.check_pid_dir()
         self.check_startup_dir()
 
-    def copy_config_file(self, config_file, path=None, overwrite=False):
+    def copy_config_file(self, config_file: str, path: Path, overwrite=False) -> bool:
         """Copy a default config file into the active profile directory.
 
-        Default configuration files are kept in :mod:`IPython.config.default`.
+        Default configuration files are kept in :mod:`IPython.core.profile`.
         This function moves these from that location to the working profile
         directory.
         """
-        dst = os.path.join(self.location, config_file)
-        if os.path.isfile(dst) and not overwrite:
+        dst = Path(os.path.join(self.location, config_file))
+        if dst.exists() and not overwrite:
             return False
         if path is None:
-            path = os.path.join(get_ipython_package_dir(), u'config', u'profile', u'default')
-        src = os.path.join(path, config_file)
+            path = os.path.join(get_ipython_package_dir(), u'core', u'profile', u'default')
+        assert isinstance(path, Path)
+        src = path / config_file
         shutil.copy(src, dst)
         return True
 
@@ -211,7 +188,7 @@ class ProfileDir(LoggingConfigurable):
         is not found, a :class:`ProfileDirError` exception will be raised.
 
         The search path algorithm is:
-        1. ``os.getcwdu()``
+        1. ``os.getcwd()`` # removed for security reason.
         2. ``ipython_dir``
 
         Parameters
@@ -223,7 +200,7 @@ class ProfileDir(LoggingConfigurable):
             will be "profile_<profile>".
         """
         dirname = u'profile_' + name
-        paths = [os.getcwdu(), ipython_dir]
+        paths = [ipython_dir]
         for p in paths:
             profile_dir = os.path.join(p, dirname)
             if os.path.isdir(profile_dir):
@@ -240,12 +217,9 @@ class ProfileDir(LoggingConfigurable):
         Parameters
         ----------
         profile_dir : unicode or str
-            The path of the profile directory.  This is expanded using
-            :func:`IPython.utils.genutils.expand_path`.
+            The path of the profile directory.
         """
         profile_dir = expand_path(profile_dir)
         if not os.path.isdir(profile_dir):
             raise ProfileDirError('Profile directory not found: %s' % profile_dir)
         return cls(location=profile_dir, config=config)
-
-

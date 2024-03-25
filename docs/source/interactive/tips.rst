@@ -22,12 +22,12 @@ Run doctests
 ------------
 
 Run your doctests from within IPython for development and debugging. The
-special %doctest_mode command toggles a mode where the prompt, output and
+special ``%doctest_mode`` command toggles a mode where the prompt, output and
 exceptions display matches as closely as possible that of the default Python
 interpreter. In addition, this mode allows you to directly paste in code that
 contains leading '>>>' prompts, even if they have extra leading whitespace
-(as is common in doctest files). This combined with the ``%history -t`` call
-to see your translated history allows for an easy doctest workflow, where you
+(as is common in doctest files). This combined with the ``%hist -t`` call to
+see your translated history allows for an easy doctest workflow, where you
 can go from doctest to interactive execution to pasting into valid Python code
 as needed.
 
@@ -62,7 +62,7 @@ mechanism, this is automatically stored::
 
     hello - this is a temporary file
 
-    Out[1]: "print 'hello - this is a temporary file'\n"
+    Out[1]: "print('hello - this is a temporary file')\n"
 
 Now, if you call ``%edit -p``, IPython tries to open an editor with the
 same data as the last time you used %edit. So if you haven't used %edit
@@ -82,7 +82,7 @@ Continuing with the example above, this should illustrate this idea::
 
     hello - now I made some changes
 
-    Out[2]: "print 'hello - now I made some changes'\n"
+    Out[2]: "print('hello - now I made some changes')\n"
 
     In [3]: edit _1
 
@@ -94,7 +94,7 @@ Continuing with the example above, this should illustrate this idea::
 
     IPython version control at work :)
 
-    Out[3]: "print 'hello - this is a temporary file'\nprint 'IPython version control at work :)'\n"
+    Out[3]: "print('hello - this is a temporary file')\nprint('IPython version control at work :)')\n"
 
 
 This section was written after a contribution by Alexander Belchenko on

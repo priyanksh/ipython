@@ -9,9 +9,6 @@ def test_import_crashhandler():
 def test_import_debugger():
     from IPython.core import debugger
 
-def test_import_fakemodule():
-    from IPython.core import fakemodule
-
 def test_import_excolors():
     from IPython.core import excolors
 
@@ -47,9 +44,6 @@ def test_import_prompts():
 
 def test_import_release():
     from IPython.core import release
-
-def test_import_shadowns():
-    from IPython.core import shadowns
 
 def test_import_ultratb():
     from IPython.core import ultratb

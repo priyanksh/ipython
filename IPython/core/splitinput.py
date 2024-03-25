@@ -25,6 +25,7 @@ import sys
 
 from IPython.utils import py3compat
 from IPython.utils.encoding import get_stream_enc
+from IPython.core.oinspect import OInfo
 
 #-----------------------------------------------------------------------------
 # Main function
@@ -41,7 +42,7 @@ from IPython.utils.encoding import get_stream_enc
 # ! and !! trigger if they are first char(s) *or* follow an indent
 # ? triggers as first or last char.
 
-line_split = re.compile("""
+line_split = re.compile(r"""
              ^(\s*)               # any leading space
              ([,;/%]|!!?|\?\??)?  # escape character or characters
              \s*(%{0,2}[\w\.\*]*)     # function/method, possibly with leading %
@@ -68,7 +69,7 @@ def split_user_input(line, pattern=None):
         except ValueError:
             # print "split failed for line '%s'" % line
             ifun, the_rest = line, u''
-        pre = re.match('^(\s*)(.*)',line).groups()[0]
+        pre = re.match(r'^(\s*)(.*)',line).groups()[0]
         esc = ""
     else:
         pre, esc, ifun, the_rest = match.groups()
@@ -114,11 +115,11 @@ class LineInfo(object):
 
         self.pre_char       = self.pre.strip()
         if self.pre_char:
-            self.pre_whitespace = '' # No whitespace allowd before esc chars
+            self.pre_whitespace = '' # No whitespace allowed before esc chars
         else:
             self.pre_whitespace = self.pre
 
-    def ofind(self, ip):
+    def ofind(self, ip) -> OInfo:
         """Do a full, attribute-walking lookup of the ifun in the various
         namespaces for the given IPython InteractiveShell instance.
 

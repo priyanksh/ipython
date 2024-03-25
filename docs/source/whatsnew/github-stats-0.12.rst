@@ -120,7 +120,7 @@ Pull requests (257):
 * `1120 <https://github.com/ipython/ipython/issues/1120>`_: updated vim-ipython (pending)
 * `1150 <https://github.com/ipython/ipython/issues/1150>`_: BUG: Scrolling pager in vsplit on Mac OSX tears.
 * `1149 <https://github.com/ipython/ipython/issues/1149>`_: #1148 (win32 arg_split)
-* `1147 <https://github.com/ipython/ipython/issues/1147>`_: Put qtconsole forground when launching
+* `1147 <https://github.com/ipython/ipython/issues/1147>`_: Put qtconsole foreground when launching
 * `1146 <https://github.com/ipython/ipython/issues/1146>`_: allow saving notebook.py next to notebook.ipynb
 * `1128 <https://github.com/ipython/ipython/issues/1128>`_: fix pylab StartMenu item
 * `1140 <https://github.com/ipython/ipython/issues/1140>`_: Namespaces for embedding
@@ -140,7 +140,7 @@ Pull requests (257):
 * `1126 <https://github.com/ipython/ipython/issues/1126>`_: Totally remove pager when read only (notebook)
 * `1091 <https://github.com/ipython/ipython/issues/1091>`_: qtconsole : allow copy with shortcut in pager
 * `1114 <https://github.com/ipython/ipython/issues/1114>`_: fix magics history in two-process ipython console
-* `1113 <https://github.com/ipython/ipython/issues/1113>`_: Fixing #1112 removing failing asserts for test_carriage_return and test_...
+* `1113 <https://github.com/ipython/ipython/issues/1113>`_: Fixing #1112 removing failing asserts for test_carriage_return and test_beep
 * `1089 <https://github.com/ipython/ipython/issues/1089>`_: Support carriage return ('\r') and beep ('\b') characters in the qtconsole
 * `1108 <https://github.com/ipython/ipython/issues/1108>`_: Completer usability 2 (rebased of  pr #1082)
 * `864 <https://github.com/ipython/ipython/issues/864>`_: Two-process terminal frontend (ipython core branch)
@@ -269,7 +269,7 @@ Pull requests (257):
 * `857 <https://github.com/ipython/ipython/issues/857>`_: make sdist flags work again (e.g. --manifest-only)
 * `835 <https://github.com/ipython/ipython/issues/835>`_: Add Tab key to list of keys that scroll down the paging widget.
 * `859 <https://github.com/ipython/ipython/issues/859>`_: Fix for issue #800
-* `848 <https://github.com/ipython/ipython/issues/848>`_: Python3 setup.py install failiure
+* `848 <https://github.com/ipython/ipython/issues/848>`_: Python3 setup.py install failure
 * `845 <https://github.com/ipython/ipython/issues/845>`_: Tests on Python 3
 * `802 <https://github.com/ipython/ipython/issues/802>`_: DOC: extensions: add documentation for the bundled extensions
 * `830 <https://github.com/ipython/ipython/issues/830>`_: contiguous stdout/stderr in notebook
@@ -284,7 +284,7 @@ Pull requests (257):
 * `798 <https://github.com/ipython/ipython/issues/798>`_: pexpect & Python 3
 * `804 <https://github.com/ipython/ipython/issues/804>`_: Magic 'range' crash if greater than len(input_hist)
 * `821 <https://github.com/ipython/ipython/issues/821>`_: update tornado dependency to 2.1
-* `807 <https://github.com/ipython/ipython/issues/807>`_: Faciliate ssh tunnel sharing by announcing ports
+* `807 <https://github.com/ipython/ipython/issues/807>`_: Facilitate ssh tunnel sharing by announcing ports
 * `795 <https://github.com/ipython/ipython/issues/795>`_: Add cluster-id for multiple cluster instances per profile
 * `742 <https://github.com/ipython/ipython/issues/742>`_: Glut
 * `668 <https://github.com/ipython/ipython/issues/668>`_: Greedy completer
@@ -444,7 +444,7 @@ Regular issues (258):
 * `1044 <https://github.com/ipython/ipython/issues/1044>`_: run -p doesn't work in python 3
 * `1010 <https://github.com/ipython/ipython/issues/1010>`_: emacs freezes when ipython-complete is called
 * `82 <https://github.com/ipython/ipython/issues/82>`_: Update devel docs with discussion about good changelogs
-* `116 <https://github.com/ipython/ipython/issues/116>`_: Update release management scipts and release.revision for git
+* `116 <https://github.com/ipython/ipython/issues/116>`_: Update release management scripts and release.revision for git
 * `1022 <https://github.com/ipython/ipython/issues/1022>`_: Pylab banner shows up with first cell to execute
 * `787 <https://github.com/ipython/ipython/issues/787>`_: Keyboard selection of multiple lines in the notebook behaves inconsistently
 * `1037 <https://github.com/ipython/ipython/issues/1037>`_: notepad + jsonlib: TypeError: Only whitespace may be used for indentation.
@@ -513,7 +513,7 @@ Regular issues (258):
 * `919 <https://github.com/ipython/ipython/issues/919>`_: Pop-up segfault when moving cursor out of qtconsole window
 * `181 <https://github.com/ipython/ipython/issues/181>`_: cls command does not work on windows
 * `917 <https://github.com/ipython/ipython/issues/917>`_: documentation typos
-* `818 <https://github.com/ipython/ipython/issues/818>`_: %run does not work with non-ascii characeters in path
+* `818 <https://github.com/ipython/ipython/issues/818>`_: %run does not work with non-ascii characters in path
 * `907 <https://github.com/ipython/ipython/issues/907>`_: Errors in custom completer functions can crash IPython
 * `867 <https://github.com/ipython/ipython/issues/867>`_: doc: notebook password authentication howto
 * `211 <https://github.com/ipython/ipython/issues/211>`_: paste command not working
@@ -534,7 +534,7 @@ Regular issues (258):
 * `744 <https://github.com/ipython/ipython/issues/744>`_: cannot create notebook in offline mode if mathjax not installed
 * `865 <https://github.com/ipython/ipython/issues/865>`_: Make tracebacks from %paste show the code
 * `535 <https://github.com/ipython/ipython/issues/535>`_: exception unicode handling in %run is faulty in qtconsole
-* `817 <https://github.com/ipython/ipython/issues/817>`_: iPython crashed
+* `817 <https://github.com/ipython/ipython/issues/817>`_: IPython crashed
 * `799 <https://github.com/ipython/ipython/issues/799>`_: %edit magic not working on windows xp in qtconsole
 * `732 <https://github.com/ipython/ipython/issues/732>`_: QTConsole wrongly promotes the index of the input line on which user presses Enter
 * `662 <https://github.com/ipython/ipython/issues/662>`_: ipython test failures on Mac OS X Lion

@@ -2,7 +2,7 @@
 """
 Support for creating GUI apps and starting event loops.
 
-IPython's GUI integration allows interative plotting and GUI usage in IPython
+IPython's GUI integration allows interactive plotting and GUI usage in IPython
 session. IPython has two different types of GUI integration:
 
 1. The terminal based IPython supports GUI event loops through Python's
@@ -57,16 +57,10 @@ so you don't have to depend on IPython.
 
 """
 
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
+from IPython.core.getipython import get_ipython
 
 #-----------------------------------------------------------------------------
 # wx
@@ -84,6 +78,15 @@ def get_app_wx(*args, **kwargs):
 
 def is_event_loop_running_wx(app=None):
     """Is the wx event loop running."""
+    # New way: check attribute on shell instance
+    ip = get_ipython()
+    if ip is not None:
+        if ip.active_eventloop and ip.active_eventloop == 'wx':
+            return True
+        # Fall through to checking the application, because Wx has a native way
+        # to check if the event loop is running, unlike Qt.
+
+    # Old way: check Wx application
     if app is None:
         app = get_app_wx()
     if hasattr(app, '_in_event_loop'):
@@ -103,33 +106,39 @@ def start_event_loop_wx(app=None):
         app._in_event_loop = True
 
 #-----------------------------------------------------------------------------
-# qt4
+# Qt
 #-----------------------------------------------------------------------------
 
 def get_app_qt4(*args, **kwargs):
-    """Create a new qt4 app or return an existing one."""
+    """Create a new Qt app or return an existing one."""
     from IPython.external.qt_for_kernel import QtGui
     app = QtGui.QApplication.instance()
     if app is None:
         if not args:
-            args = ([''],)
+            args = ([""],)
         app = QtGui.QApplication(*args, **kwargs)
     return app
 
 def is_event_loop_running_qt4(app=None):
-    """Is the qt4 event loop running."""
+    """Is the qt event loop running."""
+    # New way: check attribute on shell instance
+    ip = get_ipython()
+    if ip is not None:
+        return ip.active_eventloop and ip.active_eventloop.startswith('qt')
+
+    # Old way: check attribute on QApplication singleton
     if app is None:
-        app = get_app_qt4([''])
+        app = get_app_qt4([""])
     if hasattr(app, '_in_event_loop'):
         return app._in_event_loop
     else:
-        # Does qt4 provide a other way to detect this?
+        # Does qt provide a other way to detect this?
         return False
 
 def start_event_loop_qt4(app=None):
-    """Start the qt4 event loop in a consistent manner."""
+    """Start the qt event loop in a consistent manner."""
     if app is None:
-        app = get_app_qt4([''])
+        app = get_app_qt4([""])
     if not is_event_loop_running_qt4(app):
         app._in_event_loop = True
         app.exec_()

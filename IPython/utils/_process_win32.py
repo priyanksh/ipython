@@ -13,16 +13,17 @@ This file is only meant to be imported by process.py, not by end-users.
 #-----------------------------------------------------------------------------
 # Imports
 #-----------------------------------------------------------------------------
-from __future__ import print_function
 
 # stdlib
 import os
 import sys
 import ctypes
+import time
 
 from ctypes import c_int, POINTER
 from ctypes.wintypes import LPCWSTR, HLOCAL
-from subprocess import STDOUT
+from subprocess import STDOUT, TimeoutExpired
+from threading import Thread
 
 # our own imports
 from ._process_common import read_no_interrupt, process_handler, arg_split as py_arg_split
@@ -44,8 +45,8 @@ class AvoidUNCPath(object):
     change and None otherwise, so that users can apply the necessary adjustment
     to their system calls in the event of a change.
 
-    Example
-    -------
+    Examples
+    --------
     ::
         cmd = 'dir'
         with AvoidUNCPath() as path:
@@ -54,7 +55,7 @@ class AvoidUNCPath(object):
             os.system(cmd)
     """
     def __enter__(self):
-        self.path = os.getcwdu()
+        self.path = os.getcwd()
         self.is_unc_path = self.path.startswith(r"\\")
         if self.is_unc_path:
             # change to c drive (as cmd.exe cannot handle UNC addresses)
@@ -70,39 +71,32 @@ class AvoidUNCPath(object):
             os.chdir(self.path)
 
 
-def _find_cmd(cmd):
-    """Find the full path to a .bat or .exe using the win32api module."""
-    try:
-        from win32api import SearchPath
-    except ImportError:
-        raise ImportError('you need to have pywin32 installed for this to work')
-    else:
-        PATH = os.environ['PATH']
-        extensions = ['.exe', '.com', '.bat', '.py']
-        path = None
-        for ext in extensions:
-            try:
-                path = SearchPath(PATH, cmd, ext)[0]
-            except:
-                pass
-        if path is None:
-            raise OSError("command %r not found" % cmd)
-        else:
-            return path
-
-
 def _system_body(p):
     """Callback for _system."""
     enc = DEFAULT_ENCODING
-    for line in read_no_interrupt(p.stdout).splitlines():
-        line = line.decode(enc, 'replace')
-        print(line, file=sys.stdout)
-    for line in read_no_interrupt(p.stderr).splitlines():
-        line = line.decode(enc, 'replace')
-        print(line, file=sys.stderr)
 
-    # Wait to finish for returncode
-    return p.wait()
+    def stdout_read():
+        for line in read_no_interrupt(p.stdout).splitlines():
+            line = line.decode(enc, 'replace')
+            print(line, file=sys.stdout)
+
+    def stderr_read():
+        for line in read_no_interrupt(p.stderr).splitlines():
+            line = line.decode(enc, 'replace')
+            print(line, file=sys.stderr)
+
+    Thread(target=stdout_read).start()
+    Thread(target=stderr_read).start()
+
+    # Wait to finish for returncode. Unfortunately, Python has a bug where
+    # wait() isn't interruptible (https://bugs.python.org/issue28168) so poll in
+    # a loop instead of just doing `return p.wait()`.
+    while True:
+        result = p.poll()
+        if result is None:
+            time.sleep(0.01)
+        else:
+            return result
 
 
 def system(cmd):
@@ -112,14 +106,12 @@ def system(cmd):
 
     Parameters
     ----------
-    cmd : str
-      A command to be executed in the system shell.
+    cmd : str or list
+        A command to be executed in the system shell.
 
     Returns
     -------
-    None : we explicitly do NOT return the subprocess status code, as this
-    utility is meant to be used extensively in IPython, where any return value
-    would trigger :func:`sys.displayhook` calls.
+    int : child process' exit code.
     """
     # The controller provides interactivity with both
     # stdin and stdout
@@ -138,8 +130,8 @@ def getoutput(cmd):
 
     Parameters
     ----------
-    cmd : str
-      A command to be executed in the system shell.
+    cmd : str or list
+        A command to be executed in the system shell.
 
     Returns
     -------
@@ -153,7 +145,7 @@ def getoutput(cmd):
 
     if out is None:
         out = b''
-    return py3compat.bytes_to_str(out)
+    return py3compat.decode(out)
 
 try:
     CommandLineToArgvW = ctypes.windll.shell32.CommandLineToArgvW
@@ -167,8 +159,8 @@ try:
         """Split a command line's arguments in a shell-like manner.
 
         This is a special version for windows that use a ctypes call to CommandLineToArgvW
-        to do the argv splitting. The posix paramter is ignored.
-        
+        to do the argv splitting. The posix parameter is ignored.
+
         If strict=False, process_common.arg_split(...strict=False) is used instead.
         """
         #CommandLineToArgvW returns path to executable if called with empty string.
@@ -185,3 +177,8 @@ try:
         return result
 except AttributeError:
     arg_split = py_arg_split
+
+def check_pid(pid):
+    # OpenProcess returns 0 if no such process (of ours) exists
+    # positive int otherwise
+    return bool(ctypes.windll.kernel32.OpenProcess(1,0,pid))

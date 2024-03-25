@@ -8,22 +8,13 @@
 #  the file COPYING, distributed as part of this software.
 #-----------------------------------------------------------------------------
 
+
+import os
+
 #-----------------------------------------------------------------------------
-# Functions
+# Constants
 #-----------------------------------------------------------------------------
 
-# User-level entry point for testing
-def test(all=False):
-    """Run the entire IPython test suite.
-
-    For fine-grained control, you should use the :file:`iptest` script supplied
-    with the IPython installation."""
-
-    # Do the import internally, so that this function doesn't increase total
-    # import time
-    from iptest import run_iptestall
-    run_iptestall(inc_slow=all)
-
-# So nose doesn't try to run this as a test itself and we end up with an
-# infinite test loop
-test.__test__ = False
+# We scale all timeouts via this factor, slow machines can increase it
+IPYTHON_TESTING_TIMEOUT_SCALE = float(os.getenv(
+                                    'IPYTHON_TESTING_TIMEOUT_SCALE', 1))

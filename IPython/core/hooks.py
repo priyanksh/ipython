@@ -39,15 +39,23 @@ import os
 import subprocess
 import sys
 
-from IPython.core.error import TryNext
+from .error import TryNext
 
 # List here all the default hooks.  For now it's just the editor functions
 # but over time we'll move here all the public API for user-accessible things.
 
-__all__ = ['editor', 'fix_error_editor', 'synchronize_with_editor',
-           'input_prefilter', 'shutdown_hook', 'late_startup_hook',
-           'show_in_pager','pre_prompt_hook',
-           'pre_run_code_hook', 'clipboard_get']
+__all__ = [
+    "editor",
+    "synchronize_with_editor",
+    "show_in_pager",
+    "pre_prompt_hook",
+    "clipboard_get",
+]
+
+deprecated = {'pre_run_code_hook': "a callback for the 'pre_execute' or 'pre_run_cell' event",
+              'late_startup_hook': "a callback for the 'shell_initialized' event",
+              'shutdown_hook': "the atexit module",
+             }
 
 def editor(self, filename, linenum=None, wait=True):
     """Open the default editor at the given filename and linenumber.
@@ -75,30 +83,6 @@ def editor(self, filename, linenum=None, wait=True):
                             shell=True)
     if wait and proc.wait() != 0:
         raise TryNext()
-
-import tempfile
-def fix_error_editor(self,filename,linenum,column,msg):
-    """Open the editor at the given filename, linenumber, column and
-    show an error message. This is used for correcting syntax errors.
-    The current implementation only has special support for the VIM editor,
-    and falls back on the 'editor' hook if VIM is not used.
-
-    Call ip.set_hook('fix_error_editor',youfunc) to use your own function,
-    """
-    def vim_quickfix_file():
-        t = tempfile.NamedTemporaryFile()
-        t.write('%s:%d:%d:%s\n' % (filename,linenum,column,msg))
-        t.flush()
-        return t
-    if os.path.basename(self.editor) != 'vim':
-        self.hooks.editor(filename,linenum)
-        return
-    t = vim_quickfix_file()
-    try:
-        if os.system('vim --cmd "set errorformat=%f:%l:%c:%m" -q ' + t.name):
-            raise TryNext()
-    finally:
-        t.close()
 
 
 def synchronize_with_editor(self, filename, linenum, column):
@@ -151,39 +135,7 @@ class CommandChainDispatcher:
         return iter(self.chain)
 
 
-def input_prefilter(self,line):
-    """ Default input prefilter
-
-    This returns the line as unchanged, so that the interpreter
-    knows that nothing was done and proceeds with "classic" prefiltering
-    (%magics, !shell commands etc.).
-
-    Note that leading whitespace is not passed to this hook. Prefilter
-    can't alter indentation.
-
-    """
-    #print "attempt to rewrite",line #dbg
-    return line
-
-
-def shutdown_hook(self):
-    """ default shutdown hook
-
-    Typically, shotdown hooks should raise TryNext so all shutdown ops are done
-    """
-
-    #print "default shutdown hook ok" # dbg
-    return
-
-
-def late_startup_hook(self):
-    """ Executed after ipython has been constructed and configured
-
-    """
-    #print "default startup hook ok" # dbg
-
-
-def show_in_pager(self,s):
+def show_in_pager(self, data, start, screen_lines):
     """ Run a string through pager """
     # raising TryNext here will use the default paging functionality
     raise TryNext
@@ -199,24 +151,21 @@ def pre_prompt_hook(self):
     return None
 
 
-def pre_run_code_hook(self):
-    """ Executed before running the (prefiltered) code in IPython """
-    return None
-
-
 def clipboard_get(self):
     """ Get text from the clipboard.
     """
-    from IPython.lib.clipboard import (
-        osx_clipboard_get, tkinter_clipboard_get,
-        win32_clipboard_get
+    from ..lib.clipboard import (
+        osx_clipboard_get,
+        tkinter_clipboard_get,
+        win32_clipboard_get,
+        wayland_clipboard_get,
     )
     if sys.platform == 'win32':
         chain = [win32_clipboard_get, tkinter_clipboard_get]
     elif sys.platform == 'darwin':
         chain = [osx_clipboard_get, tkinter_clipboard_get]
     else:
-        chain = [tkinter_clipboard_get]
+        chain = [wayland_clipboard_get, tkinter_clipboard_get]
     dispatcher = CommandChainDispatcher()
     for func in chain:
         dispatcher.add(func)

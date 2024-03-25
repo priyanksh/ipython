@@ -10,72 +10,172 @@
 #  the file COPYING, distributed as part of this software.
 #-----------------------------------------------------------------------------
 
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
 
-from __future__ import absolute_import
-from __future__ import print_function
-
-import __builtin__ as builtin_mod
-import __future__
 import abc
 import ast
 import atexit
+import bdb
+import builtins as builtin_mod
+import functools
+import inspect
 import os
 import re
 import runpy
+import shutil
+import subprocess
 import sys
 import tempfile
+import traceback
 import types
+import warnings
+from ast import stmt
 from io import open as io_open
+from logging import error
+from pathlib import Path
+from typing import Callable
+from typing import List as ListType, Dict as DictType, Any as AnyType
+from typing import Optional, Sequence, Tuple
+from warnings import warn
 
-from IPython.config.configurable import SingletonConfigurable
-from IPython.core import debugger, oinspect
-from IPython.core import magic
-from IPython.core import page
-from IPython.core import prefilter
-from IPython.core import shadowns
-from IPython.core import ultratb
-from IPython.core.alias import AliasManager, AliasError
+try:
+    from pickleshare import PickleShareDB
+except ModuleNotFoundError:
+
+    class PickleShareDB:  # type: ignore [no-redef]
+        _mock = True
+
+        def __init__(self, path):
+            pass
+
+        def get(self, key, default=None):
+            warn(
+                f"This is now an optional IPython functionality, using {key} requires you to install the `pickleshare` library.",
+                stacklevel=2,
+            )
+            return default
+
+        def __getitem__(self, key):
+            warn(
+                f"This is now an optional IPython functionality, using {key} requires you to install the `pickleshare` library.",
+                stacklevel=2,
+            )
+            return None
+
+        def __setitem__(self, key, value):
+            warn(
+                f"This is now an optional IPython functionality, setting {key} requires you to install the `pickleshare` library.",
+                stacklevel=2,
+            )
+
+        def __delitem__(self, key):
+            warn(
+                f"This is now an optional IPython functionality, deleting {key} requires you to install the `pickleshare` library.",
+                stacklevel=2,
+            )
+
+
+from tempfile import TemporaryDirectory
+from traitlets import (
+    Any,
+    Bool,
+    CaselessStrEnum,
+    Dict,
+    Enum,
+    Instance,
+    Integer,
+    List,
+    Type,
+    Unicode,
+    default,
+    observe,
+    validate,
+)
+from traitlets.config.configurable import SingletonConfigurable
+from traitlets.utils.importstring import import_item
+
+import IPython.core.hooks
+from IPython.core import magic, oinspect, page, prefilter, ultratb
+from IPython.core.alias import Alias, AliasManager
 from IPython.core.autocall import ExitAutocall
 from IPython.core.builtin_trap import BuiltinTrap
-from IPython.core.compilerop import CachingCompiler, check_linecache_ipython
+from IPython.core.compilerop import CachingCompiler
+from IPython.core.debugger import InterruptiblePdb
 from IPython.core.display_trap import DisplayTrap
 from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
-from IPython.core.error import UsageError
+from IPython.core.error import InputRejected, UsageError
+from IPython.core.events import EventManager, available_events
 from IPython.core.extensions import ExtensionManager
-from IPython.core.fakemodule import FakeModule, init_fakemod_dict
 from IPython.core.formatters import DisplayFormatter
 from IPython.core.history import HistoryManager
-from IPython.core.inputsplitter import IPythonInputSplitter, ESC_MAGIC, ESC_MAGIC2
+from IPython.core.inputtransformer2 import ESC_MAGIC, ESC_MAGIC2
 from IPython.core.logger import Logger
 from IPython.core.macro import Macro
 from IPython.core.payload import PayloadManager
 from IPython.core.prefilter import PrefilterManager
 from IPython.core.profiledir import ProfileDir
-from IPython.core.prompts import PromptManager
-from IPython.lib.latextools import LaTeXTool
+from IPython.core.usage import default_banner
+from IPython.display import display
+from IPython.paths import get_ipython_dir
 from IPython.testing.skipdoctest import skip_doctest
-from IPython.utils import PyColorize
-from IPython.utils import io
-from IPython.utils import py3compat
-from IPython.utils import openpy
+from IPython.utils import PyColorize, io, openpy, py3compat
 from IPython.utils.decorators import undoc
 from IPython.utils.io import ask_yes_no
 from IPython.utils.ipstruct import Struct
-from IPython.utils.path import get_home_dir, get_ipython_dir, get_py_filename, unquote_filename
-from IPython.utils.pickleshare import PickleShareDB
-from IPython.utils.process import system, getoutput
+from IPython.utils.path import ensure_dir_exists, get_home_dir, get_py_filename
+from IPython.utils.process import getoutput, system
 from IPython.utils.strdispatch import StrDispatch
 from IPython.utils.syspathcontext import prepended_to_syspath
-from IPython.utils.text import (format_screen, LSString, SList,
-                                DollarFormatter)
-from IPython.utils.traitlets import (Integer, CBool, CaselessStrEnum, Enum,
-                                     List, Unicode, Instance, Type)
-from IPython.utils.warn import warn, error
-import IPython.core.hooks
+from IPython.utils.text import DollarFormatter, LSString, SList, format_screen
+from IPython.core.oinspect import OInfo
+
+
+sphinxify: Optional[Callable]
+
+try:
+    import docrepr.sphinxify as sphx
+
+    def sphinxify(oinfo):
+        wrapped_docstring = sphx.wrap_main_docstring(oinfo)
+
+        def sphinxify_docstring(docstring):
+            with TemporaryDirectory() as dirname:
+                return {
+                    "text/html": sphx.sphinxify(wrapped_docstring, dirname),
+                    "text/plain": docstring,
+                }
+
+        return sphinxify_docstring
+except ImportError:
+    sphinxify = None
+
+if sys.version_info[:2] < (3, 11):
+    from exceptiongroup import BaseExceptionGroup
+
+class ProvisionalWarning(DeprecationWarning):
+    """
+    Warning class for unstable features
+    """
+    pass
+
+from ast import Module
+
+_assign_nodes = (ast.AugAssign, ast.AnnAssign, ast.Assign)
+_single_targets_nodes = (ast.AugAssign, ast.AnnAssign)
+
+#-----------------------------------------------------------------------------
+# Await Helpers
+#-----------------------------------------------------------------------------
+
+# we still need to run things using the asyncio eventloop, but there is no
+# async integration
+from .async_helpers import (
+    _asyncio_runner,
+    _curio_runner,
+    _pseudo_sync_runner,
+    _should_be_async,
+    _trio_runner,
+)
 
 #-----------------------------------------------------------------------------
 # Globals
@@ -87,6 +187,19 @@ dedent_re = re.compile(r'^\s+raise|^\s+return|^\s+pass')
 #-----------------------------------------------------------------------------
 # Utilities
 #-----------------------------------------------------------------------------
+
+
+def is_integer_string(s: str):
+    """
+    Variant of "str.isnumeric()" that allow negative values and other ints.
+    """
+    try:
+        int(s)
+        return True
+    except ValueError:
+        return False
+    raise ValueError("Unexpected error")
+
 
 @undoc
 def softspace(file, newvalue):
@@ -105,33 +218,17 @@ def softspace(file, newvalue):
     return oldvalue
 
 @undoc
-def no_op(*a, **kw): pass
+def no_op(*a, **kw):
+    pass
 
-@undoc
-class NoOpContext(object):
-    def __enter__(self): pass
-    def __exit__(self, type, value, traceback): pass
-no_op_context = NoOpContext()
 
 class SpaceInInput(Exception): pass
 
-@undoc
-class Bunch: pass
-
-
-def get_default_colors():
-    if sys.platform=='darwin':
-        return "LightBG"
-    elif os.name=='nt':
-        return 'Linux'
-    else:
-        return 'Linux'
-
 
 class SeparateUnicode(Unicode):
-    """A Unicode subclass to validate separate_in, separate_out, etc.
+    r"""A Unicode subclass to validate separate_in, separate_out, etc.
 
-    This is a Unicode based trait that converts '0'->'' and '\\n'->'\n'.
+    This is a Unicode based trait that converts '0'->'' and ``'\\n'->'\n'``.
     """
 
     def validate(self, obj, value):
@@ -140,68 +237,106 @@ class SeparateUnicode(Unicode):
         return super(SeparateUnicode, self).validate(obj, value)
 
 
-class ReadlineNoRecord(object):
-    """Context manager to execute some code, then reload readline history
-    so that interactive input to the code doesn't appear when pressing up."""
-    def __init__(self, shell):
-        self.shell = shell
-        self._nested_level = 0
+@undoc
+class DummyMod(object):
+    """A dummy module used for IPython's interactive module when
+    a namespace must be assigned to the module's __dict__."""
+    __spec__ = None
 
-    def __enter__(self):
-        if self._nested_level == 0:
-            try:
-                self.orig_length = self.current_length()
-                self.readline_tail = self.get_readline_tail()
-            except (AttributeError, IndexError):   # Can fail with pyreadline
-                self.orig_length, self.readline_tail = 999999, []
-        self._nested_level += 1
 
-    def __exit__(self, type, value, traceback):
-        self._nested_level -= 1
-        if self._nested_level == 0:
-            # Try clipping the end if it's got longer
-            try:
-                e = self.current_length() - self.orig_length
-                if e > 0:
-                    for _ in range(e):
-                        self.shell.readline.remove_history_item(self.orig_length)
+class ExecutionInfo(object):
+    """The arguments used for a call to :meth:`InteractiveShell.run_cell`
 
-                # If it still doesn't match, just reload readline history.
-                if self.current_length() != self.orig_length \
-                    or self.get_readline_tail() != self.readline_tail:
-                    self.shell.refill_readline_hist()
-            except (AttributeError, IndexError):
-                pass
-        # Returning False will cause exceptions to propagate
-        return False
+    Stores information about what is going to happen.
+    """
+    raw_cell = None
+    store_history = False
+    silent = False
+    shell_futures = True
+    cell_id = None
 
-    def current_length(self):
-        return self.shell.readline.get_current_history_length()
+    def __init__(self, raw_cell, store_history, silent, shell_futures, cell_id):
+        self.raw_cell = raw_cell
+        self.store_history = store_history
+        self.silent = silent
+        self.shell_futures = shell_futures
+        self.cell_id = cell_id
 
-    def get_readline_tail(self, n=10):
-        """Get the last n items in readline history."""
-        end = self.shell.readline.get_current_history_length() + 1
-        start = max(end-n, 1)
-        ghi = self.shell.readline.get_history_item
-        return [ghi(x) for x in range(start, end)]
+    def __repr__(self):
+        name = self.__class__.__qualname__
+        raw_cell = (
+            (self.raw_cell[:50] + "..") if len(self.raw_cell) > 50 else self.raw_cell
+        )
+        return (
+            '<%s object at %x, raw_cell="%s" store_history=%s silent=%s shell_futures=%s cell_id=%s>'
+            % (
+                name,
+                id(self),
+                raw_cell,
+                self.store_history,
+                self.silent,
+                self.shell_futures,
+                self.cell_id,
+            )
+        )
 
-#-----------------------------------------------------------------------------
-# Main IPython class
-#-----------------------------------------------------------------------------
+
+class ExecutionResult:
+    """The result of a call to :meth:`InteractiveShell.run_cell`
+
+    Stores information about what took place.
+    """
+
+    execution_count: Optional[int] = None
+    error_before_exec: Optional[bool] = None
+    error_in_exec: Optional[BaseException] = None
+    info = None
+    result = None
+
+    def __init__(self, info):
+        self.info = info
+
+    @property
+    def success(self):
+        return (self.error_before_exec is None) and (self.error_in_exec is None)
+
+    def raise_error(self):
+        """Reraises error if `success` is `False`, otherwise does nothing"""
+        if self.error_before_exec is not None:
+            raise self.error_before_exec
+        if self.error_in_exec is not None:
+            raise self.error_in_exec
+
+    def __repr__(self):
+        name = self.__class__.__qualname__
+        return '<%s object at %x, execution_count=%s error_before_exec=%s error_in_exec=%s info=%s result=%s>' %\
+                (name, id(self), self.execution_count, self.error_before_exec, self.error_in_exec, repr(self.info), repr(self.result))
+
+@functools.wraps(io_open)
+def _modified_open(file, *args, **kwargs):
+    if file in {0, 1, 2}:
+        raise ValueError(
+            f"IPython won't let you open fd={file} by default "
+            "as it is likely to crash IPython. If you know what you are doing, "
+            "you can use builtins' open."
+        )
+
+    return io_open(file, *args, **kwargs)
 
 class InteractiveShell(SingletonConfigurable):
     """An enhanced, interactive shell for Python."""
 
     _instance = None
-    
-    ast_transformers = List([], config=True, help=
-        """
+
+    ast_transformers: List[ast.NodeTransformer] = List(
+        [],
+        help="""
         A list of ast.NodeTransformer subclass instances, which will be applied
         to user input before code is run.
-        """
-    )
+        """,
+    ).tag(config=True)
 
-    autocall = Enum((0,1,2), default_value=0, config=True, help=
+    autocall = Enum((0,1,2), default_value=0, help=
         """
         Make IPython automatically call any callable object even if you didn't
         type explicit parentheses. For example, 'str 43' becomes 'str(43)'
@@ -210,201 +345,246 @@ class InteractiveShell(SingletonConfigurable):
         arguments on the line, and '2' for 'full' autocall, where all callable
         objects are automatically called (even if no arguments are present).
         """
-    )
-    # TODO: remove all autoindent logic and put into frontends.
-    # We can't do this yet because even runlines uses the autoindent.
-    autoindent = CBool(True, config=True, help=
+    ).tag(config=True)
+
+    autoindent = Bool(True, help=
         """
         Autoindent IPython code entered interactively.
         """
-    )
-    automagic = CBool(True, config=True, help=
+    ).tag(config=True)
+
+    autoawait = Bool(True, help=
+        """
+        Automatically run await statement in the top level repl.
+        """
+    ).tag(config=True)
+
+    loop_runner_map ={
+        'asyncio':(_asyncio_runner, True),
+        'curio':(_curio_runner, True),
+        'trio':(_trio_runner, True),
+        'sync': (_pseudo_sync_runner, False)
+    }
+
+    loop_runner = Any(default_value="IPython.core.interactiveshell._asyncio_runner",
+        allow_none=True,
+        help="""Select the loop runner that will be used to execute top-level asynchronous code"""
+    ).tag(config=True)
+
+    @default('loop_runner')
+    def _default_loop_runner(self):
+        return import_item("IPython.core.interactiveshell._asyncio_runner")
+
+    @validate('loop_runner')
+    def _import_runner(self, proposal):
+        if isinstance(proposal.value, str):
+            if proposal.value in self.loop_runner_map:
+                runner, autoawait = self.loop_runner_map[proposal.value]
+                self.autoawait = autoawait
+                return runner
+            runner = import_item(proposal.value)
+            if not callable(runner):
+                raise ValueError('loop_runner must be callable')
+            return runner
+        if not callable(proposal.value):
+            raise ValueError('loop_runner must be callable')
+        return proposal.value
+
+    automagic = Bool(True, help=
         """
         Enable magic commands to be called without the leading %.
         """
-    )
-    cache_size = Integer(1000, config=True, help=
+    ).tag(config=True)
+
+    banner1 = Unicode(default_banner,
+        help="""The part of the banner to be printed before the profile"""
+    ).tag(config=True)
+    banner2 = Unicode('',
+        help="""The part of the banner to be printed after the profile"""
+    ).tag(config=True)
+
+    cache_size = Integer(1000, help=
         """
         Set the size of the output cache.  The default is 1000, you can
         change it permanently in your config file.  Setting it to 0 completely
-        disables the caching system, and the minimum value accepted is 20 (if
-        you provide a value less than 20, it is reset to 0 and a warning is
+        disables the caching system, and the minimum value accepted is 3 (if
+        you provide a value less than 3, it is reset to 0 and a warning is
         issued).  This limit is defined because otherwise you'll spend more
         time re-flushing a too small cache than working
         """
-    )
-    color_info = CBool(True, config=True, help=
+    ).tag(config=True)
+    color_info = Bool(True, help=
         """
         Use colors for displaying information about objects. Because this
         information is passed through a pager (like 'less'), and some pagers
         get confused with color codes, this capability can be turned off.
         """
-    )
-    colors = CaselessStrEnum(('NoColor','LightBG','Linux'),
-                             default_value=get_default_colors(), config=True,
-        help="Set the color scheme (NoColor, Linux, or LightBG)."
-    )
-    colors_force = CBool(False, help=
-        """
-        Force use of ANSI color codes, regardless of OS and readline
-        availability.
-        """
-        # FIXME: This is essentially a hack to allow ZMQShell to show colors
-        # without readline on Win32. When the ZMQ formatting system is
-        # refactored, this should be removed.
-    )
-    debug = CBool(False, config=True)
-    deep_reload = CBool(False, config=True, help=
-        """
-        Enable deep (recursive) reloading by default. IPython can use the
-        deep_reload module which reloads changes in modules recursively (it
-        replaces the reload() function, so you don't need to change anything to
-        use it). deep_reload() forces a full reload of modules whose code may
-        have changed, which the default reload() function does not.  When
-        deep_reload is off, IPython will use the normal reload(), but
-        deep_reload will still be available as dreload().
-        """
-    )
-    disable_failing_post_execute = CBool(False, config=True,
+    ).tag(config=True)
+    colors = CaselessStrEnum(('Neutral', 'NoColor','LightBG','Linux'),
+                             default_value='Neutral',
+        help="Set the color scheme (NoColor, Neutral, Linux, or LightBG)."
+    ).tag(config=True)
+    debug = Bool(False).tag(config=True)
+    disable_failing_post_execute = Bool(False,
         help="Don't call post-execute functions that have failed in the past."
-    )
-    display_formatter = Instance(DisplayFormatter)
+    ).tag(config=True)
+    display_formatter = Instance(DisplayFormatter, allow_none=True)
     displayhook_class = Type(DisplayHook)
     display_pub_class = Type(DisplayPublisher)
+    compiler_class = Type(CachingCompiler)
+    inspector_class = Type(
+        oinspect.Inspector, help="Class to use to instantiate the shell inspector"
+    ).tag(config=True)
+
+    sphinxify_docstring = Bool(False, help=
+        """
+        Enables rich html representation of docstrings. (This requires the
+        docrepr module).
+        """).tag(config=True)
+
+    @observe("sphinxify_docstring")
+    def _sphinxify_docstring_changed(self, change):
+        if change['new']:
+            warn("`sphinxify_docstring` is provisional since IPython 5.0 and might change in future versions." , ProvisionalWarning)
+
+    enable_html_pager = Bool(False, help=
+        """
+        (Provisional API) enables html representation in mime bundles sent
+        to pagers.
+        """).tag(config=True)
+
+    @observe("enable_html_pager")
+    def _enable_html_pager_changed(self, change):
+        if change['new']:
+            warn("`enable_html_pager` is provisional since IPython 5.0 and might change in future versions.", ProvisionalWarning)
+
     data_pub_class = None
 
-    exit_now = CBool(False)
+    exit_now = Bool(False)
     exiter = Instance(ExitAutocall)
+    @default('exiter')
     def _exiter_default(self):
         return ExitAutocall(self)
     # Monotonically increasing execution counter
     execution_count = Integer(1)
     filename = Unicode("<ipython console>")
-    ipython_dir= Unicode('', config=True) # Set to get_ipython_dir() in __init__
+    ipython_dir= Unicode('').tag(config=True) # Set to get_ipython_dir() in __init__
 
-    # Input splitter, to transform input line by line and detect when a block
-    # is ready to be executed.
-    input_splitter = Instance('IPython.core.inputsplitter.IPythonInputSplitter',
-                              (), {'line_input_checker': True})
-    
-    # This InputSplitter instance is used to transform completed cells before
-    # running them. It allows cell magics to contain blank lines.
-    input_transformer_manager = Instance('IPython.core.inputsplitter.IPythonInputSplitter',
-                                         (), {'line_input_checker': False})
-    
-    logstart = CBool(False, config=True, help=
-        """
-        Start logging to the default log file.
-        """
+    # Used to transform cells before running them, and check whether code is complete
+    input_transformer_manager = Instance('IPython.core.inputtransformer2.TransformerManager',
+                                         ())
+
+    @property
+    def input_transformers_cleanup(self):
+        return self.input_transformer_manager.cleanup_transforms
+
+    input_transformers_post: List = List(
+        [],
+        help="A list of string input transformers, to be applied after IPython's "
+             "own input transformations."
     )
-    logfile = Unicode('', config=True, help=
+
+    @property
+    def input_splitter(self):
+        """Make this available for backward compatibility (pre-7.0 release) with existing code.
+
+        For example, ipykernel ipykernel currently uses
+        `shell.input_splitter.check_complete`
+        """
+        from warnings import warn
+        warn("`input_splitter` is deprecated since IPython 7.0, prefer `input_transformer_manager`.",
+             DeprecationWarning, stacklevel=2
+        )
+        return self.input_transformer_manager
+
+    logstart = Bool(False, help=
+        """
+        Start logging to the default log file in overwrite mode.
+        Use `logappend` to specify a log file to **append** logs to.
+        """
+    ).tag(config=True)
+    logfile = Unicode('', help=
         """
         The name of the logfile to use.
         """
-    )
-    logappend = Unicode('', config=True, help=
+    ).tag(config=True)
+    logappend = Unicode('', help=
         """
         Start logging to the given file in append mode.
+        Use `logfile` to specify a log file to **overwrite** logs to.
         """
-    )
+    ).tag(config=True)
     object_info_string_level = Enum((0,1,2), default_value=0,
-                                    config=True)
-    pdb = CBool(False, config=True, help=
+    ).tag(config=True)
+    pdb = Bool(False, help=
         """
         Automatically call the pdb debugger after every exception.
         """
-    )
-    multiline_history = CBool(sys.platform != 'win32', config=True,
-        help="Save multi-line entries as one entry in readline history"
-    )
+    ).tag(config=True)
+    display_page = Bool(False,
+        help="""If True, anything that would be passed to the pager
+        will be displayed as regular output instead."""
+    ).tag(config=True)
 
-    # deprecated prompt traits:
-    
-    prompt_in1 = Unicode('In [\\#]: ', config=True,
-        help="Deprecated, use PromptManager.in_template")
-    prompt_in2 = Unicode('   .\\D.: ', config=True,
-        help="Deprecated, use PromptManager.in2_template")
-    prompt_out = Unicode('Out[\\#]: ', config=True,
-        help="Deprecated, use PromptManager.out_template")
-    prompts_pad_left = CBool(True, config=True,
-        help="Deprecated, use PromptManager.justify")
-    
-    def _prompt_trait_changed(self, name, old, new):
-        table = {
-            'prompt_in1' : 'in_template',
-            'prompt_in2' : 'in2_template',
-            'prompt_out' : 'out_template',
-            'prompts_pad_left' : 'justify',
-        }
-        warn("InteractiveShell.{name} is deprecated, use PromptManager.{newname}".format(
-                name=name, newname=table[name])
-        )
-        # protect against weird cases where self.config may not exist:
-        if self.config is not None:
-            # propagate to corresponding PromptManager trait
-            setattr(self.config.PromptManager, table[name], new)
-    
-    _prompt_in1_changed = _prompt_trait_changed
-    _prompt_in2_changed = _prompt_trait_changed
-    _prompt_out_changed = _prompt_trait_changed
-    _prompt_pad_left_changed = _prompt_trait_changed
-    
-    show_rewritten_input = CBool(True, config=True,
+
+    show_rewritten_input = Bool(True,
         help="Show rewritten input, e.g. for autocall."
-    )
-    
-    quiet = CBool(False, config=True)
+    ).tag(config=True)
 
-    history_length = Integer(10000, config=True)
+    quiet = Bool(False).tag(config=True)
 
-    # The readline stuff will eventually be moved to the terminal subclass
-    # but for now, we can't do that as readline is welded in everywhere.
-    readline_use = CBool(True, config=True)
-    readline_remove_delims = Unicode('-/~', config=True)
-    readline_delims = Unicode() # set by init_readline()
-    # don't use \M- bindings by default, because they
-    # conflict with 8-bit encodings. See gh-58,gh-88
-    readline_parse_and_bind = List([
-            'tab: complete',
-            '"\C-l": clear-screen',
-            'set show-all-if-ambiguous on',
-            '"\C-o": tab-insert',
-            '"\C-r": reverse-search-history',
-            '"\C-s": forward-search-history',
-            '"\C-p": history-search-backward',
-            '"\C-n": history-search-forward',
-            '"\e[A": history-search-backward',
-            '"\e[B": history-search-forward',
-            '"\C-k": kill-line',
-            '"\C-u": unix-line-discard',
-        ], allow_none=False, config=True)
+    history_length = Integer(10000,
+        help='Total length of command history'
+    ).tag(config=True)
 
-    ast_node_interactivity = Enum(['all', 'last', 'last_expr', 'none'],
-                                  default_value='last_expr', config=True, 
+    history_load_length = Integer(1000, help=
+        """
+        The number of saved history entries to be loaded
+        into the history buffer at startup.
+        """
+    ).tag(config=True)
+
+    ast_node_interactivity = Enum(['all', 'last', 'last_expr', 'none', 'last_expr_or_assign'],
+                                  default_value='last_expr',
                                   help="""
-        'all', 'last', 'last_expr' or 'none', specifying which nodes should be
-        run interactively (displaying output from expressions).""")
+        'all', 'last', 'last_expr' or 'none', 'last_expr_or_assign' specifying
+        which nodes should be run interactively (displaying output from expressions).
+        """
+    ).tag(config=True)
+
+    warn_venv = Bool(
+        True,
+        help="Warn if running in a virtual environment with no IPython installed (so IPython from the global environment is used).",
+    ).tag(config=True)
 
     # TODO: this part of prompt management should be moved to the frontends.
     # Use custom TraitTypes that convert '0'->'' and '\\n'->'\n'
-    separate_in = SeparateUnicode('\n', config=True)
-    separate_out = SeparateUnicode('', config=True)
-    separate_out2 = SeparateUnicode('', config=True)
-    wildcards_case_sensitive = CBool(True, config=True)
-    xmode = CaselessStrEnum(('Context','Plain', 'Verbose'),
-                            default_value='Context', config=True)
+    separate_in = SeparateUnicode('\n').tag(config=True)
+    separate_out = SeparateUnicode('').tag(config=True)
+    separate_out2 = SeparateUnicode('').tag(config=True)
+    wildcards_case_sensitive = Bool(True).tag(config=True)
+    xmode = CaselessStrEnum(('Context', 'Plain', 'Verbose', 'Minimal'),
+                            default_value='Context',
+                            help="Switch modes for the IPython exception handlers."
+                            ).tag(config=True)
 
     # Subcomponents of InteractiveShell
-    alias_manager = Instance('IPython.core.alias.AliasManager')
-    prefilter_manager = Instance('IPython.core.prefilter.PrefilterManager')
-    builtin_trap = Instance('IPython.core.builtin_trap.BuiltinTrap')
-    display_trap = Instance('IPython.core.display_trap.DisplayTrap')
-    extension_manager = Instance('IPython.core.extensions.ExtensionManager')
-    payload_manager = Instance('IPython.core.payload.PayloadManager')
-    history_manager = Instance('IPython.core.history.HistoryManager')
-    magics_manager = Instance('IPython.core.magic.MagicsManager')
+    alias_manager = Instance("IPython.core.alias.AliasManager", allow_none=True)
+    prefilter_manager = Instance(
+        "IPython.core.prefilter.PrefilterManager", allow_none=True
+    )
+    builtin_trap = Instance("IPython.core.builtin_trap.BuiltinTrap")
+    display_trap = Instance("IPython.core.display_trap.DisplayTrap")
+    extension_manager = Instance(
+        "IPython.core.extensions.ExtensionManager", allow_none=True
+    )
+    payload_manager = Instance("IPython.core.payload.PayloadManager", allow_none=True)
+    history_manager = Instance(
+        "IPython.core.history.HistoryAccessorBase", allow_none=True
+    )
+    magics_manager = Instance("IPython.core.magic.MagicsManager")
 
-    profile_dir = Instance('IPython.core.application.ProfileDir')
+    profile_dir = Instance('IPython.core.application.ProfileDir', allow_none=True)
     @property
     def profile(self):
         if self.profile_dir is not None:
@@ -413,18 +593,24 @@ class InteractiveShell(SingletonConfigurable):
 
 
     # Private interface
-    _post_execute = Instance(dict)
+    _post_execute = Dict()
 
     # Tracks any GUI loop loaded for pylab
     pylab_gui_select = None
 
+    last_execution_succeeded = Bool(True, help='Did last executed command succeeded')
+
+    last_execution_result = Instance('IPython.core.interactiveshell.ExecutionResult', help='Result of executing the last command', allow_none=True)
+
     def __init__(self, ipython_dir=None, profile_dir=None,
                  user_module=None, user_ns=None,
                  custom_exceptions=((), None), **kwargs):
-
         # This is where traits with a config_key argument are updated
         # from the values on config.
         super(InteractiveShell, self).__init__(**kwargs)
+        if 'PromptManager' in self.config:
+            warn('As of IPython 5.0 `PromptManager` config will have no effect'
+                 ' and has been replaced by TerminalInteractiveShell.prompts_class')
         self.configurables = [self]
 
         # These are relatively independent and stateless
@@ -432,7 +618,7 @@ class InteractiveShell(SingletonConfigurable):
         self.init_profile_dir(profile_dir)
         self.init_instance_attrs()
         self.init_environment()
-        
+
         # Check if we're in a virtualenv, and set up sys.path.
         self.init_virtualenv()
 
@@ -458,30 +644,15 @@ class InteractiveShell(SingletonConfigurable):
 
         self.init_syntax_highlighting()
         self.init_hooks()
+        self.init_events()
         self.init_pushd_popd_magic()
-        # self.init_traceback_handlers use to be here, but we moved it below
-        # because it and init_io have to come after init_readline.
         self.init_user_ns()
         self.init_logger()
-        self.init_alias()
         self.init_builtins()
 
         # The following was in post_config_initialization
         self.init_inspector()
-        # init_readline() must come before init_io(), because init_io uses
-        # readline related things.
-        self.init_readline()
-        # We save this here in case user code replaces raw_input, but it needs
-        # to be after init_readline(), because PyPy's readline works by replacing
-        # raw_input.
-        if py3compat.PY3:
-            self.raw_input_original = input
-        else:
-            self.raw_input_original = raw_input
-        # init_completer must come after init_readline, because it needs to
-        # know whether readline is present or not system-wide to configure the
-        # completers, since the completion machinery can now operate
-        # independently of readline (e.g. over the network)
+        self.raw_input_original = input
         self.init_completer()
         # TODO: init_io() needs to happen before init_traceback handlers
         # because the traceback handlers hardcode the stdout/stderr streams.
@@ -493,14 +664,21 @@ class InteractiveShell(SingletonConfigurable):
         self.init_display_pub()
         self.init_data_pub()
         self.init_displayhook()
-        self.init_latextool()
         self.init_magics()
+        self.init_alias()
         self.init_logstart()
         self.init_pdb()
         self.init_extension_manager()
         self.init_payload()
-        self.hooks.late_startup_hook()
+        self.events.trigger('shell_initialized', self)
         atexit.register(self.atexit_operations)
+
+        # The trio runner is used for running Trio in the foreground thread. It
+        # is different from `_trio_runner(async_fn)` in `async_helpers.py`
+        # which calls `trio.run()` for every cell. This runner runs all cells
+        # inside a single Trio event loop. If used, it is set from
+        # `ipykernel.kernelapp`.
+        self.trio_runner = None
 
     def get_ipython(self):
         """Return the currently running IPython instance."""
@@ -509,25 +687,21 @@ class InteractiveShell(SingletonConfigurable):
     #-------------------------------------------------------------------------
     # Trait changed handlers
     #-------------------------------------------------------------------------
-
-    def _ipython_dir_changed(self, name, new):
-        if not os.path.isdir(new):
-            os.makedirs(new, mode = 0o777)
+    @observe('ipython_dir')
+    def _ipython_dir_changed(self, change):
+        ensure_dir_exists(change['new'])
 
     def set_autoindent(self,value=None):
-        """Set the autoindent flag, checking for readline support.
+        """Set the autoindent flag.
 
         If called with no arguments, it acts as a toggle."""
-
-        if value != 0 and not self.has_readline:
-            if os.name == 'posix':
-                warn("The auto-indent feature requires the readline library")
-            self.autoindent = 0
-            return
         if value is None:
             self.autoindent = not self.autoindent
         else:
             self.autoindent = value
+
+    def set_trio_runner(self, tr):
+        self.trio_runner = tr
 
     #-------------------------------------------------------------------------
     # init_* methods called by __init__
@@ -544,14 +718,15 @@ class InteractiveShell(SingletonConfigurable):
         if profile_dir is not None:
             self.profile_dir = profile_dir
             return
-        self.profile_dir =\
-            ProfileDir.create_profile_dir_by_name(self.ipython_dir, 'default')
+        self.profile_dir = ProfileDir.create_profile_dir_by_name(
+            self.ipython_dir, "default"
+        )
 
     def init_instance_attrs(self):
         self.more = False
 
         # command compiler
-        self.compile = CachingCompiler()
+        self.compile = self.compiler_class()
 
         # Make an empty namespace, which extension writers can rely on both
         # existing and NEVER being used by ipython itself.  This gives them a
@@ -561,14 +736,13 @@ class InteractiveShell(SingletonConfigurable):
         self.meta = Struct()
 
         # Temporary files used for various purposes.  Deleted at exit.
+        # The files here are stored with Path from Pathlib
         self.tempfiles = []
-
-        # Keep track of readline usage (later set by init_readline)
-        self.has_readline = False
+        self.tempdirs = []
 
         # keep track of where we started running (mainly for crash post-mortem)
         # This is not being used anywhere currently.
-        self.starting_dir = os.getcwdu()
+        self.starting_dir = os.getcwd()
 
         # Indentation management
         self.indent_current_nsp = 0
@@ -589,10 +763,16 @@ class InteractiveShell(SingletonConfigurable):
         except AttributeError:
             self.stdin_encoding = 'ascii'
 
-    def init_syntax_highlighting(self):
+
+    @observe('colors')
+    def init_syntax_highlighting(self, changes=None):
         # Python source parser/formatter for syntax highlighting
-        pyformat = PyColorize.Parser().format
-        self.pycolorize = lambda src: pyformat(src,'str',self.colors)
+        pyformat = PyColorize.Parser(style=self.colors, parent=self).format
+        self.pycolorize = lambda src: pyformat(src,'str')
+
+    def refresh_style(self):
+        # No-op here, used in subclass
+        pass
 
     def init_pushd_popd_magic(self):
         # for pushd/popd management
@@ -614,44 +794,33 @@ class InteractiveShell(SingletonConfigurable):
         elif self.logstart:
             self.magic('logstart')
 
+
     def init_builtins(self):
         # A single, static flag that we set to True.  Its presence indicates
         # that an IPython shell has been created, and we make no attempts at
         # removing on exit or representing the existence of more than one
         # IPython at a time.
         builtin_mod.__dict__['__IPYTHON__'] = True
-
-        # In 0.11 we introduced '__IPYTHON__active' as an integer we'd try to
-        # manage on enter/exit, but with all our shells it's virtually
-        # impossible to get all the cases right.  We're leaving the name in for
-        # those who adapted their codes to check for this flag, but will
-        # eventually remove it after a few more releases.
-        builtin_mod.__dict__['__IPYTHON__active'] = \
-                                          'Deprecated, check for __IPYTHON__'
+        builtin_mod.__dict__['display'] = display
 
         self.builtin_trap = BuiltinTrap(shell=self)
 
-    def init_inspector(self):
+    @observe('colors')
+    def init_inspector(self, changes=None):
         # Object inspector
-        self.inspector = oinspect.Inspector(oinspect.InspectColors,
-                                            PyColorize.ANSICodeColors,
-                                            'NoColor',
-                                            self.object_info_string_level)
+        self.inspector = self.inspector_class(
+            oinspect.InspectColors,
+            PyColorize.ANSICodeColors,
+            self.colors,
+            self.object_info_string_level,
+        )
 
     def init_io(self):
-        # This will just use sys.stdout and sys.stderr. If you want to
-        # override sys.stdout and sys.stderr themselves, you need to do that
-        # *before* instantiating this class, because io holds onto
-        # references to the underlying streams.
-        if (sys.platform == 'win32' or sys.platform == 'cli') and self.has_readline:
-            io.stdout = io.stderr = io.IOStream(self.readline._outputfile)
-        else:
-            io.stdout = io.IOStream(sys.stdout)
-            io.stderr = io.IOStream(sys.stderr)
+        # implemented in subclasses, TerminalInteractiveShell does call
+        # colorama.init().
+        pass
 
     def init_prompts(self):
-        self.prompt_manager = PromptManager(shell=self, parent=self)
-        self.configurables.append(self.prompt_manager)
         # Set system prompts, so that scripts can decide if they are running
         # interactively.
         sys.ps1 = 'In : '
@@ -663,7 +832,7 @@ class InteractiveShell(SingletonConfigurable):
         self.configurables.append(self.display_formatter)
 
     def init_display_pub(self):
-        self.display_pub = self.display_pub_class(parent=self)
+        self.display_pub = self.display_pub_class(parent=self, shell=self)
         self.configurables.append(self.display_pub)
 
     def init_data_pub(self):
@@ -685,39 +854,90 @@ class InteractiveShell(SingletonConfigurable):
         # the appropriate time.
         self.display_trap = DisplayTrap(hook=self.displayhook)
 
-    def init_latextool(self):
-        """Configure LaTeXTool."""
-        cfg = LaTeXTool.instance(parent=self)
-        if cfg not in self.configurables:
-            self.configurables.append(cfg)
+    @staticmethod
+    def get_path_links(p: Path):
+        """Gets path links including all symlinks
+
+        Examples
+        --------
+        In [1]: from IPython.core.interactiveshell import InteractiveShell
+
+        In [2]: import sys, pathlib
+
+        In [3]: paths = InteractiveShell.get_path_links(pathlib.Path(sys.executable))
+
+        In [4]: len(paths) == len(set(paths))
+        Out[4]: True
+
+        In [5]: bool(paths)
+        Out[5]: True
+        """
+        paths = [p]
+        while p.is_symlink():
+            new_path = Path(os.readlink(p))
+            if not new_path.is_absolute():
+                new_path = p.parent / new_path
+            p = new_path
+            paths.append(p)
+        return paths
 
     def init_virtualenv(self):
-        """Add a virtualenv to sys.path so the user can import modules from it.
+        """Add the current virtualenv to sys.path so the user can import modules from it.
         This isn't perfect: it doesn't use the Python interpreter with which the
         virtualenv was built, and it ignores the --no-site-packages option. A
         warning will appear suggesting the user installs IPython in the
         virtualenv, but for many cases, it probably works well enough.
-        
+
         Adapted from code snippets online.
-        
+
         http://blog.ufsoft.org/2009/1/29/ipython-and-virtualenv
         """
         if 'VIRTUAL_ENV' not in os.environ:
             # Not in a virtualenv
             return
-        
-        if sys.executable.startswith(os.environ['VIRTUAL_ENV']):
-            # Running properly in the virtualenv, don't need to do anything
+        elif os.environ["VIRTUAL_ENV"] == "":
+            warn("Virtual env path set to '', please check if this is intended.")
             return
-        
-        warn("Attempting to work in a virtualenv. If you encounter problems, please "
-             "install IPython inside the virtualenv.")
+
+        p = Path(sys.executable)
+        p_venv = Path(os.environ["VIRTUAL_ENV"])
+
+        # fallback venv detection:
+        # stdlib venv may symlink sys.executable, so we can't use realpath.
+        # but others can symlink *to* the venv Python, so we can't just use sys.executable.
+        # So we just check every item in the symlink tree (generally <= 3)
+        paths = self.get_path_links(p)
+
+        # In Cygwin paths like "c:\..." and '\cygdrive\c\...' are possible
+        if p_venv.parts[1] == "cygdrive":
+            drive_name = p_venv.parts[2]
+            p_venv = (drive_name + ":/") / Path(*p_venv.parts[3:])
+
+        if any(p_venv == p.parents[1] for p in paths):
+            # Our exe is inside or has access to the virtualenv, don't need to do anything.
+            return
+
         if sys.platform == "win32":
-            virtual_env = os.path.join(os.environ['VIRTUAL_ENV'], 'Lib', 'site-packages') 
+            virtual_env = str(Path(os.environ["VIRTUAL_ENV"], "Lib", "site-packages"))
         else:
-            virtual_env = os.path.join(os.environ['VIRTUAL_ENV'], 'lib',
-                       'python%d.%d' % sys.version_info[:2], 'site-packages')
-        
+            virtual_env_path = Path(
+                os.environ["VIRTUAL_ENV"], "lib", "python{}.{}", "site-packages"
+            )
+            p_ver = sys.version_info[:2]
+
+            # Predict version from py[thon]-x.x in the $VIRTUAL_ENV
+            re_m = re.search(r"\bpy(?:thon)?([23])\.(\d+)\b", os.environ["VIRTUAL_ENV"])
+            if re_m:
+                predicted_path = Path(str(virtual_env_path).format(*re_m.groups()))
+                if predicted_path.exists():
+                    p_ver = re_m.groups()
+
+            virtual_env = str(virtual_env_path).format(*p_ver)
+        if self.warn_venv:
+            warn(
+                "Attempting to work in a virtualenv. If you encounter problems, "
+                "please install IPython inside the virtualenv."
+            )
         import site
         sys.path.insert(0, virtual_env)
         site.addsitedir(virtual_env)
@@ -731,24 +951,41 @@ class InteractiveShell(SingletonConfigurable):
 
         This has to be called after self.user_module is created.
         """
-        self._orig_sys_module_state = {}
-        self._orig_sys_module_state['stdin'] = sys.stdin
-        self._orig_sys_module_state['stdout'] = sys.stdout
-        self._orig_sys_module_state['stderr'] = sys.stderr
-        self._orig_sys_module_state['excepthook'] = sys.excepthook
+        self._orig_sys_module_state = {'stdin': sys.stdin,
+                                       'stdout': sys.stdout,
+                                       'stderr': sys.stderr,
+                                       'excepthook': sys.excepthook}
         self._orig_sys_modules_main_name = self.user_module.__name__
         self._orig_sys_modules_main_mod = sys.modules.get(self.user_module.__name__)
 
     def restore_sys_module_state(self):
         """Restore the state of the sys module."""
         try:
-            for k, v in self._orig_sys_module_state.iteritems():
+            for k, v in self._orig_sys_module_state.items():
                 setattr(sys, k, v)
         except AttributeError:
             pass
         # Reset what what done in self.init_sys_modules
         if self._orig_sys_modules_main_mod is not None:
             sys.modules[self._orig_sys_modules_main_name] = self._orig_sys_modules_main_mod
+
+    #-------------------------------------------------------------------------
+    # Things related to the banner
+    #-------------------------------------------------------------------------
+
+    @property
+    def banner(self):
+        banner = self.banner1
+        if self.profile and self.profile != 'default':
+            banner += '\nIPython profile: %s\n' % self.profile
+        if self.banner2:
+            banner += '\n' + self.banner2
+        return banner
+
+    def show_banner(self, banner=None):
+        if banner is None:
+            banner = self.banner
+        sys.stdout.write(banner)
 
     #-------------------------------------------------------------------------
     # Things related to hooks
@@ -765,9 +1002,12 @@ class InteractiveShell(SingletonConfigurable):
         for hook_name in hooks.__all__:
             # default hooks have priority 100, i.e. low; user hooks should have
             # 0-100 priority
-            self.set_hook(hook_name,getattr(hooks,hook_name), 100)
+            self.set_hook(hook_name, getattr(hooks, hook_name), 100)
 
-    def set_hook(self,name,hook, priority = 50, str_key = None, re_key = None):
+        if self.display_page:
+            self.set_hook('show_in_pager', page.as_hook(page.display_page), 90)
+
+    def set_hook(self, name, hook, priority=50, str_key=None, re_key=None):
         """set_hook(name,hook) -> sets an internal IPython hook.
 
         IPython exposes some of its internal API as user-modifiable hooks.  By
@@ -796,6 +1036,15 @@ class InteractiveShell(SingletonConfigurable):
         if name not in IPython.core.hooks.__all__:
             print("Warning! Hook '%s' is not one of %s" % \
                   (name, IPython.core.hooks.__all__ ))
+
+        if name in IPython.core.hooks.deprecated:
+            alternative = IPython.core.hooks.deprecated[name]
+            raise ValueError(
+                "Hook {} has been deprecated since IPython 5.0. Use {} instead.".format(
+                    name, alternative
+                )
+            )
+
         if not dp:
             dp = IPython.core.hooks.CommandChainDispatcher()
 
@@ -807,26 +1056,48 @@ class InteractiveShell(SingletonConfigurable):
 
         setattr(self.hooks,name, dp)
 
+    #-------------------------------------------------------------------------
+    # Things related to events
+    #-------------------------------------------------------------------------
+
+    def init_events(self):
+        self.events = EventManager(self, available_events)
+
+        self.events.register("pre_execute", self._clear_warning_registry)
+
     def register_post_execute(self, func):
-        """Register a function for calling after code execution.
+        """DEPRECATED: Use ip.events.register('post_run_cell', func)
+
+        Register a function for calling after code execution.
         """
-        if not callable(func):
-            raise ValueError('argument %s must be callable' % func)
-        self._post_execute[func] = True
-    
+        raise ValueError(
+            "ip.register_post_execute is deprecated since IPython 1.0, use "
+            "ip.events.register('post_run_cell', func) instead."
+        )
+
+    def _clear_warning_registry(self):
+        # clear the warning registry, so that different code blocks with
+        # overlapping line number ranges don't cause spurious suppression of
+        # warnings (see gh-6611 for details)
+        if "__warningregistry__" in self.user_global_ns:
+            del self.user_global_ns["__warningregistry__"]
+
     #-------------------------------------------------------------------------
     # Things related to the "main" module
     #-------------------------------------------------------------------------
 
-    def new_main_mod(self, filename):
+    def new_main_mod(self, filename, modname):
         """Return a new 'main' module object for user code execution.
-        
+
         ``filename`` should be the path of the script which will be run in the
         module. Requests with the same filename will get the same module, with
         its namespace cleared.
-        
+
+        ``modname`` should be the module name - normally either '__main__' or
+        the basename of the file without the extension.
+
         When scripts are executed via %run, we must keep a reference to their
-        __main__ module (a FakeModule instance) around so that Python doesn't
+        __main__ module around so that Python doesn't
         clear it, rendering references to module globals useless.
 
         This method keeps said reference in a private dict, keyed by the
@@ -839,10 +1110,18 @@ class InteractiveShell(SingletonConfigurable):
         try:
             main_mod = self._main_mod_cache[filename]
         except KeyError:
-            main_mod = self._main_mod_cache[filename] = FakeModule()
+            main_mod = self._main_mod_cache[filename] = types.ModuleType(
+                        modname,
+                        doc="Module created for script run in IPython")
         else:
-            init_fakemod_dict(main_mod)
-        
+            main_mod.__dict__.clear()
+            main_mod.__name__ = modname
+
+        main_mod.__file__ = filename
+        # It seems pydoc (and perhaps others) needs any module instance to
+        # implement a __nonzero__ method
+        main_mod.__nonzero__ = lambda : True
+
         return main_mod
 
     def clear_main_mod_cache(self):
@@ -852,10 +1131,9 @@ class InteractiveShell(SingletonConfigurable):
 
         Examples
         --------
-
         In [15]: import IPython
 
-        In [16]: m = _ip.new_main_mod(IPython.__file__)
+        In [16]: m = _ip.new_main_mod(IPython.__file__, 'IPython')
 
         In [17]: len(_ip._main_mod_cache) > 0
         Out[17]: True
@@ -894,14 +1172,14 @@ class InteractiveShell(SingletonConfigurable):
                         'Control auto-activation of pdb at exceptions')
 
     def debugger(self,force=False):
-        """Call the pydb/pdb debugger.
+        """Call the pdb debugger.
 
         Keywords:
 
           - force(False): by default, this routine checks the instance call_pdb
-          flag and does not actually invoke the debugger if the flag is false.
-          The 'force' option forces the debugger to activate even if the flag
-          is false.
+            flag and does not actually invoke the debugger if the flag is false.
+            The 'force' option forces the debugger to activate even if the flag
+            is false.
         """
 
         if not (force or self.call_pdb):
@@ -911,15 +1189,7 @@ class InteractiveShell(SingletonConfigurable):
             error('No traceback has been produced, nothing to debug.')
             return
 
-        # use pydb if available
-        if debugger.has_pydb:
-            from pydb import pm
-        else:
-            # fallback to our internal debugger
-            pm = lambda : self.InteractiveTB.debugger(force=True)
-
-        with self.readline_no_record:
-            pm()
+        self.InteractiveTB.debugger(force=True)
 
     #-------------------------------------------------------------------------
     # Things related to IPython's various namespaces
@@ -969,12 +1239,12 @@ class InteractiveShell(SingletonConfigurable):
 
         # A record of hidden variables we have added to the user namespace, so
         # we can list later only variables defined in actual interactive use.
-        self.user_ns_hidden = set()
+        self.user_ns_hidden = {}
 
         # Now that FakeModule produces a real module, we've run into a nasty
         # problem: after script execution (via %run), the module where the user
         # code ran is deleted.  Now that this object is a true module (needed
-        # so docetst and other tools work correctly), the Python module
+        # so doctest and other tools work correctly), the Python module
         # teardown mechanism runs over it, and sets to None every variable
         # present in that module.  Top-level references to objects from the
         # script survive, because the user_ns is updated with them.  However,
@@ -1003,17 +1273,17 @@ class InteractiveShell(SingletonConfigurable):
                          'user_local':self.user_ns,
                          'builtin':builtin_mod.__dict__
                          }
-    
+
     @property
     def user_global_ns(self):
         return self.user_module.__dict__
 
     def prepare_user_module(self, user_module=None, user_ns=None):
         """Prepare the module and namespace in which user code will be run.
-        
+
         When IPython is started normally, both parameters are None: a new module
         is created automatically, and its __dict__ used as the namespace.
-        
+
         If only user_module is provided, its __dict__ is used as the namespace.
         If only user_ns is provided, a dummy module is created, and user_ns
         becomes the global namespace. If both are provided (as they may be
@@ -1034,22 +1304,19 @@ class InteractiveShell(SingletonConfigurable):
         """
         if user_module is None and user_ns is not None:
             user_ns.setdefault("__name__", "__main__")
-            class DummyMod(object):
-                "A dummy module used for IPython's interactive namespace."
-                pass
             user_module = DummyMod()
             user_module.__dict__ = user_ns
-            
+
         if user_module is None:
             user_module = types.ModuleType("__main__",
                 doc="Automatically created module for IPython interactive environment")
-        
+
         # We must ensure that __builtin__ (without the final 's') is always
         # available and pointing to the __builtin__ *module*.  For more details:
         # http://mail.python.org/pipermail/python-dev/2001-April/014068.html
         user_module.__dict__.setdefault('__builtin__', builtin_mod)
         user_module.__dict__.setdefault('__builtins__', builtin_mod)
-        
+
         if user_ns is None:
             user_ns = user_module.__dict__
 
@@ -1085,13 +1352,13 @@ class InteractiveShell(SingletonConfigurable):
         -----
         All data structures here are only filled in, they are NOT reset by this
         method.  If they were not empty before, data will simply be added to
-        therm.
+        them.
         """
         # This function works in two parts: first we put a few things in
         # user_ns, and we sync that contents into user_ns_hidden so that these
         # initial variables aren't shown by %who.  After the sync, we add the
         # rest of what we *do* want the user to see with %who even on a new
-        # session (probably nothing, so theye really only see their own stuff)
+        # session (probably nothing, so they really only see their own stuff)
 
         # The user dict must *always* have a __builtin__ reference to the
         # Python standard __builtin__ namespace,  which must be imported.
@@ -1104,21 +1371,12 @@ class InteractiveShell(SingletonConfigurable):
 
         # For more details:
         # http://mail.python.org/pipermail/python-dev/2001-April/014068.html
-        ns = dict()
-        
-        # Put 'help' in the user namespace
-        try:
-            from site import _Helper
-            ns['help'] = _Helper()
-        except ImportError:
-            warn('help() not available - check site.py')
+        ns = {}
 
         # make global variables for user access to the histories
         ns['_ih'] = self.history_manager.input_hist_parsed
         ns['_oh'] = self.history_manager.output_hist
         ns['_dh'] = self.history_manager.dir_hist
-
-        ns['_sh'] = shadowns
 
         # user aliases to input and output histories.  These shouldn't show up
         # in %who, as they can have very large reprs.
@@ -1127,9 +1385,10 @@ class InteractiveShell(SingletonConfigurable):
 
         # Store myself as the public api!!!
         ns['get_ipython'] = self.get_ipython
-        
+
         ns['exit'] = self.exiter
         ns['quit'] = self.exiter
+        ns["open"] = _modified_open
 
         # Sync what we've added so far to user_ns_hidden so these aren't seen
         # by %who
@@ -1141,28 +1400,33 @@ class InteractiveShell(SingletonConfigurable):
 
         # Finally, update the real user's namespace
         self.user_ns.update(ns)
-    
+
     @property
     def all_ns_refs(self):
         """Get a list of references to all the namespace dictionaries in which
         IPython might store a user-created object.
-        
+
         Note that this does not include the displayhook, which also caches
         objects from the output."""
-        return [self.user_ns, self.user_global_ns] + \
+        return [self.user_ns, self.user_global_ns, self.user_ns_hidden] + \
                [m.__dict__ for m in self._main_mod_cache.values()]
 
-    def reset(self, new_session=True):
+    def reset(self, new_session=True, aggressive=False):
         """Clear all internal namespaces, and attempt to release references to
         user objects.
 
         If new_session is True, a new history session will be opened.
         """
         # Clear histories
+        assert self.history_manager is not None
         self.history_manager.reset(new_session)
         # Reset counter used to index all histories
         if new_session:
             self.execution_count = 1
+
+        # Reset last execution result
+        self.last_execution_succeeded = True
+        self.last_execution_result = None
 
         # Flush cached output items
         if self.displayhook.do_full_cache:
@@ -1180,15 +1444,32 @@ class InteractiveShell(SingletonConfigurable):
         drop_keys.discard('__name__')
         for k in drop_keys:
             del ns[k]
-        
+
         self.user_ns_hidden.clear()
-        
+
         # Restore the user namespaces to minimal usability
         self.init_user_ns()
+        if aggressive and not hasattr(self, "_sys_modules_keys"):
+            print("Cannot restore sys.module, no snapshot")
+        elif aggressive:
+            print("culling sys module...")
+            current_keys = set(sys.modules.keys())
+            for k in current_keys - self._sys_modules_keys:
+                if k.startswith("multiprocessing"):
+                    continue
+                del sys.modules[k]
 
         # Restore the default and user aliases
         self.alias_manager.clear_aliases()
         self.alias_manager.init_aliases()
+
+        # Now define aliases that only make sense on the terminal, because they
+        # need direct access to the console in a way that we can't emulate in
+        # GUI or web frontend
+        if os.name == 'posix':
+            for cmd in ('clear', 'more', 'less', 'man'):
+                if cmd not in self.magics_manager.magics['line']:
+                    self.alias_manager.soft_define_alias(cmd, cmd)
 
         # Flush the private list of module references kept for script
         # execution protection
@@ -1211,7 +1492,7 @@ class InteractiveShell(SingletonConfigurable):
             raise ValueError("Refusing to delete %s" % varname)
 
         ns_refs = self.all_ns_refs
-        
+
         if by_name:                    # Delete by name
             for ns in ns_refs:
                 try:
@@ -1221,14 +1502,19 @@ class InteractiveShell(SingletonConfigurable):
         else:                         # Delete by object
             try:
                 obj = self.user_ns[varname]
-            except KeyError:
-                raise NameError("name '%s' is not defined" % varname)
+            except KeyError as e:
+                raise NameError("name '%s' is not defined" % varname) from e
             # Also check in output history
+            assert self.history_manager is not None
             ns_refs.append(self.history_manager.output_hist)
             for ns in ns_refs:
-                to_delete = [n for n, o in ns.iteritems() if o is obj]
+                to_delete = [n for n, o in ns.items() if o is obj]
                 for name in to_delete:
                     del ns[name]
+
+            # Ensure it is removed from the last execution result
+            if self.last_execution_result.result is obj:
+                self.last_execution_result = None
 
             # displayhook keeps extra references, but not in a dictionary
             for name in ('_', '__', '___'):
@@ -1248,8 +1534,8 @@ class InteractiveShell(SingletonConfigurable):
         if regex is not None:
             try:
                 m = re.compile(regex)
-            except TypeError:
-                raise TypeError('regex must be a string or compiled pattern')
+            except TypeError as e:
+                raise TypeError('regex must be a string or compiled pattern') from e
             # Search for keys in each namespace that match the given regex
             # If a match is found, delete the key/value pair.
             for ns in self.all_ns_refs:
@@ -1278,8 +1564,8 @@ class InteractiveShell(SingletonConfigurable):
         # We need a dict of name/value pairs to do namespace updates.
         if isinstance(variables, dict):
             vdict = variables
-        elif isinstance(variables, (basestring, list, tuple)):
-            if isinstance(variables, basestring):
+        elif isinstance(variables, (str, list, tuple)):
+            if isinstance(variables, str):
                 vlist = variables.split()
             else:
                 vlist = variables
@@ -1300,47 +1586,112 @@ class InteractiveShell(SingletonConfigurable):
         # And configure interactive visibility
         user_ns_hidden = self.user_ns_hidden
         if interactive:
-            user_ns_hidden.difference_update(vdict)
+            for name in vdict:
+                user_ns_hidden.pop(name, None)
         else:
             user_ns_hidden.update(vdict)
-    
+
     def drop_by_id(self, variables):
         """Remove a dict of variables from the user namespace, if they are the
         same as the values in the dictionary.
-        
+
         This is intended for use by extensions: variables that they've added can
         be taken back out if they are unloaded, without removing any that the
         user has overwritten.
-        
+
         Parameters
         ----------
         variables : dict
-          A dictionary mapping object names (as strings) to the objects.
+            A dictionary mapping object names (as strings) to the objects.
         """
-        for name, obj in variables.iteritems():
+        for name, obj in variables.items():
             if name in self.user_ns and self.user_ns[name] is obj:
                 del self.user_ns[name]
-                self.user_ns_hidden.discard(name)
+                self.user_ns_hidden.pop(name, None)
 
     #-------------------------------------------------------------------------
     # Things related to object introspection
     #-------------------------------------------------------------------------
+    @staticmethod
+    def _find_parts(oname: str) -> Tuple[bool, ListType[str]]:
+        """
+        Given an object name, return a list of parts of this object name.
 
-    def _ofind(self, oname, namespaces=None):
+        Basically split on docs when using attribute access,
+        and extract the value when using square bracket.
+
+
+        For example foo.bar[3].baz[x] -> foo, bar, 3, baz, x
+
+
+        Returns
+        -------
+        parts_ok: bool
+            wether we were properly able to parse parts.
+        parts: list of str
+            extracted parts
+
+
+
+        """
+        raw_parts = oname.split(".")
+        parts = []
+        parts_ok = True
+        for p in raw_parts:
+            if p.endswith("]"):
+                var, *indices = p.split("[")
+                if not var.isidentifier():
+                    parts_ok = False
+                    break
+                parts.append(var)
+                for ind in indices:
+                    if ind[-1] != "]" and not is_integer_string(ind[:-1]):
+                        parts_ok = False
+                        break
+                    parts.append(ind[:-1])
+                continue
+
+            if not p.isidentifier():
+                parts_ok = False
+            parts.append(p)
+
+        return parts_ok, parts
+
+    def _ofind(
+        self, oname: str, namespaces: Optional[Sequence[Tuple[str, AnyType]]] = None
+    ) -> OInfo:
         """Find an object in the available namespaces.
 
-        self._ofind(oname) -> dict with keys: found,obj,ospace,ismagic
+
+        Returns
+        -------
+        OInfo with fields:
+          - ismagic
+          - isalias
+          - found
+          - obj
+          - namespac
+          - parent
 
         Has special code to detect magic functions.
         """
         oname = oname.strip()
-        #print '1- oname: <%r>' % oname  # dbg
-        if not oname.startswith(ESC_MAGIC) and \
-            not oname.startswith(ESC_MAGIC2) and \
-            not py3compat.isidentifier(oname, dotted=True):
-            return dict(found=False)
+        parts_ok, parts = self._find_parts(oname)
 
-        alias_ns = None
+        if (
+            not oname.startswith(ESC_MAGIC)
+            and not oname.startswith(ESC_MAGIC2)
+            and not parts_ok
+        ):
+            return OInfo(
+                ismagic=False,
+                isalias=False,
+                found=False,
+                obj=None,
+                namespace=None,
+                parent=None,
+            )
+
         if namespaces is None:
             # Namespaces to search in:
             # Put them in a list. The order is important so that we
@@ -1348,26 +1699,20 @@ class InteractiveShell(SingletonConfigurable):
             namespaces = [ ('Interactive', self.user_ns),
                            ('Interactive (global)', self.user_global_ns),
                            ('Python builtin', builtin_mod.__dict__),
-                           ('Alias', self.alias_manager.alias_table),
                            ]
-            alias_ns = self.alias_manager.alias_table
 
-        # initialize results to 'null'
-        found = False; obj = None;  ospace = None;  ds = None;
-        ismagic = False; isalias = False; parent = None
+        ismagic = False
+        isalias = False
+        found = False
+        ospace = None
+        parent = None
+        obj = None
 
-        # We need to special-case 'print', which as of python2.6 registers as a
-        # function but should only be treated as one if print_function was
-        # loaded with a future import.  In this case, just bail.
-        if (oname == 'print' and not py3compat.PY3 and not \
-            (self.compile.compiler_flags & __future__.CO_FUTURE_PRINT_FUNCTION)):
-            return {'found':found, 'obj':obj, 'namespace':ospace,
-                    'ismagic':ismagic, 'isalias':isalias, 'parent':parent}
 
         # Look for the given name by splitting it in parts.  If the head is
         # found, then we look for all the remaining parts as members, and only
         # declare success if we can find them all.
-        oname_parts = oname.split('.')
+        oname_parts = parts
         oname_head, oname_rest = oname_parts[0],oname_parts[1:]
         for nsname,ns in namespaces:
             try:
@@ -1375,11 +1720,19 @@ class InteractiveShell(SingletonConfigurable):
             except KeyError:
                 continue
             else:
-                #print 'oname_rest:', oname_rest  # dbg
-                for part in oname_rest:
+                for idx, part in enumerate(oname_rest):
                     try:
                         parent = obj
-                        obj = getattr(obj,part)
+                        # The last part is looked up in a special way to avoid
+                        # descriptor invocation as it may raise or have side
+                        # effects.
+                        if idx == len(oname_rest) - 1:
+                            obj = self._getattr_property(obj, part)
+                        else:
+                            if is_integer_string(part):
+                                obj = obj[int(part)]
+                            else:
+                                obj = getattr(obj, part)
                     except:
                         # Blanket except b/c some badly implemented objects
                         # allow __getattr__ to raise exceptions other than
@@ -1389,8 +1742,6 @@ class InteractiveShell(SingletonConfigurable):
                     # If we finish the for loop (no break), we got all members
                     found = True
                     ospace = nsname
-                    if ns == alias_ns:
-                        isalias = True
                     break  # namespace loop
 
         # Try to see if it's magic
@@ -1411,6 +1762,7 @@ class InteractiveShell(SingletonConfigurable):
                 found = True
                 ospace = 'IPython internal'
                 ismagic = True
+                isalias = isinstance(obj, Alias)
 
         # Last try: special-case some literals like '', [], {}, etc:
         if not found and oname_head in ["''",'""','[]','{}','()']:
@@ -1418,49 +1770,89 @@ class InteractiveShell(SingletonConfigurable):
             found = True
             ospace = 'Interactive'
 
-        return {'found':found, 'obj':obj, 'namespace':ospace,
-                'ismagic':ismagic, 'isalias':isalias, 'parent':parent}
+        return OInfo(
+            obj=obj,
+            found=found,
+            parent=parent,
+            ismagic=ismagic,
+            isalias=isalias,
+            namespace=ospace,
+        )
 
-    def _ofind_property(self, oname, info):
-        """Second part of object finding, to look for property details."""
-        if info.found:
-            # Get the docstring of the class property if it exists.
-            path = oname.split('.')
-            root = '.'.join(path[:-1])
-            if info.parent is not None:
-                try:
-                    target = getattr(info.parent, '__class__')
-                    # The object belongs to a class instance.
-                    try:
-                        target = getattr(target, path[-1])
-                        # The class defines the object.
-                        if isinstance(target, property):
-                            oname = root + '.__class__.' + path[-1]
-                            info = Struct(self._ofind(oname))
-                    except AttributeError: pass
-                except AttributeError: pass
+    @staticmethod
+    def _getattr_property(obj, attrname):
+        """Property-aware getattr to use in object finding.
 
-        # We return either the new info or the unmodified input if the object
-        # hadn't been found
-        return info
+        If attrname represents a property, return it unevaluated (in case it has
+        side effects or raises an error.
 
-    def _object_find(self, oname, namespaces=None):
+        """
+        if not isinstance(obj, type):
+            try:
+                # `getattr(type(obj), attrname)` is not guaranteed to return
+                # `obj`, but does so for property:
+                #
+                # property.__get__(self, None, cls) -> self
+                #
+                # The universal alternative is to traverse the mro manually
+                # searching for attrname in class dicts.
+                if is_integer_string(attrname):
+                    return obj[int(attrname)]
+                else:
+                    attr = getattr(type(obj), attrname)
+            except AttributeError:
+                pass
+            else:
+                # This relies on the fact that data descriptors (with both
+                # __get__ & __set__ magic methods) take precedence over
+                # instance-level attributes:
+                #
+                #    class A(object):
+                #        @property
+                #        def foobar(self): return 123
+                #    a = A()
+                #    a.__dict__['foobar'] = 345
+                #    a.foobar  # == 123
+                #
+                # So, a property may be returned right away.
+                if isinstance(attr, property):
+                    return attr
+
+        # Nothing helped, fall back.
+        return getattr(obj, attrname)
+
+    def _object_find(self, oname, namespaces=None) -> OInfo:
         """Find an object and return a struct with info about it."""
-        inf = Struct(self._ofind(oname, namespaces))
-        return Struct(self._ofind_property(oname, inf))
+        return self._ofind(oname, namespaces)
 
-    def _inspect(self, meth, oname, namespaces=None, **kw):
+    def _inspect(self, meth, oname: str, namespaces=None, **kw):
         """Generic interface to the inspector system.
 
-        This function is meant to be called by pdef, pdoc & friends."""
-        info = self._object_find(oname, namespaces)
-        if info.found:
+        This function is meant to be called by pdef, pdoc & friends.
+        """
+        info: OInfo = self._object_find(oname, namespaces)
+        if self.sphinxify_docstring:
+            if sphinxify is None:
+                raise ImportError("Module ``docrepr`` required but missing")
+            docformat = sphinxify(self.object_inspect(oname))
+        else:
+            docformat = None
+        if info.found or hasattr(info.parent, oinspect.HOOK_NAME):
             pmethod = getattr(self.inspector, meth)
-            formatter = format_screen if info.ismagic else None
+            # TODO: only apply format_screen to the plain/text repr of the mime
+            # bundle.
+            formatter = format_screen if info.ismagic else docformat
             if meth == 'pdoc':
                 pmethod(info.obj, oname, formatter)
             elif meth == 'pinfo':
-                pmethod(info.obj, oname, formatter, info, **kw)
+                pmethod(
+                    info.obj,
+                    oname,
+                    formatter,
+                    info,
+                    enable_html_pager=self.enable_html_pager,
+                    **kw,
+                )
             else:
                 pmethod(info.obj, oname)
         else:
@@ -1468,6 +1860,7 @@ class InteractiveShell(SingletonConfigurable):
             return 'not found'  # so callers can take other action
 
     def object_inspect(self, oname, detail_level=0):
+        """Get object info about oname"""
         with self.builtin_trap:
             info = self._object_find(oname)
             if info.found:
@@ -1476,6 +1869,35 @@ class InteractiveShell(SingletonConfigurable):
                 )
             else:
                 return oinspect.object_info(name=oname, found=False)
+
+    def object_inspect_text(self, oname, detail_level=0):
+        """Get object info as formatted text"""
+        return self.object_inspect_mime(oname, detail_level)['text/plain']
+
+    def object_inspect_mime(self, oname, detail_level=0, omit_sections=()):
+        """Get object info as a mimebundle of formatted representations.
+
+        A mimebundle is a dictionary, keyed by mime-type.
+        It must always have the key `'text/plain'`.
+        """
+        with self.builtin_trap:
+            info = self._object_find(oname)
+            if info.found:
+                docformat = (
+                    sphinxify(self.object_inspect(oname))
+                    if self.sphinxify_docstring
+                    else None
+                )
+                return self.inspector._get_info(
+                    info.obj,
+                    oname,
+                    info=info,
+                    detail_level=detail_level,
+                    formatter=docformat,
+                    omit_sections=omit_sections,
+                )
+            else:
+                raise KeyError(oname)
 
     #-------------------------------------------------------------------------
     # Things related to history management
@@ -1490,17 +1912,19 @@ class InteractiveShell(SingletonConfigurable):
     # Things related to exception handling and tracebacks (not debugging)
     #-------------------------------------------------------------------------
 
+    debugger_cls = InterruptiblePdb
+
     def init_traceback_handlers(self, custom_exceptions):
         # Syntax error handler.
-        self.SyntaxTB = ultratb.SyntaxTB(color_scheme='NoColor')
+        self.SyntaxTB = ultratb.SyntaxTB(color_scheme='NoColor', parent=self)
 
         # The interactive one is initialized with an offset, meaning we always
         # want to remove the topmost item in the traceback, which is our own
-        # internal code. Valid modes: ['Plain','Context','Verbose']
+        # internal code. Valid modes: ['Plain','Context','Verbose','Minimal']
         self.InteractiveTB = ultratb.AutoFormattedTB(mode = 'Plain',
                                                      color_scheme='NoColor',
                                                      tb_offset = 1,
-                                   check_cache=check_linecache_ipython)
+                                   debugger_cls=self.debugger_cls, parent=self)
 
         # The instance will store a pointer to the system-wide exception hook,
         # so that runtime code (such as magics) can access it.  This is because
@@ -1514,7 +1938,7 @@ class InteractiveShell(SingletonConfigurable):
         self.InteractiveTB.set_mode(mode=self.xmode)
 
     def set_custom_exc(self, exc_tuple, handler):
-        """set_custom_exc(exc_tuple,handler)
+        """set_custom_exc(exc_tuple, handler)
 
         Set a custom exception handler, which will be called if any of the
         exceptions in exc_tuple occur in the mainloop (specifically, in the
@@ -1522,7 +1946,6 @@ class InteractiveShell(SingletonConfigurable):
 
         Parameters
         ----------
-
         exc_tuple : tuple of exception classes
             A *tuple* of exception classes, for which to call the defined
             handler.  It is very important that you use a tuple, and NOT A
@@ -1550,40 +1973,42 @@ class InteractiveShell(SingletonConfigurable):
             exception or returns an invalid result, it will be immediately
             disabled.
 
+        Notes
+        -----
         WARNING: by putting in your own exception handler into IPython's main
         execution loop, you run a very good chance of nasty crashes.  This
-        facility should only be used if you really know what you are doing."""
+        facility should only be used if you really know what you are doing.
+        """
 
-        assert type(exc_tuple)==type(()) , \
-               "The custom exceptions must be given AS A TUPLE."
+        if not isinstance(exc_tuple, tuple):
+            raise TypeError("The custom exceptions must be given as a tuple.")
 
-        def dummy_handler(self,etype,value,tb,tb_offset=None):
+        def dummy_handler(self, etype, value, tb, tb_offset=None):
             print('*** Simple custom exception handler ***')
-            print('Exception type :',etype)
-            print('Exception value:',value)
-            print('Traceback      :',tb)
-            #print 'Source code    :','\n'.join(self.buffer)
-        
+            print('Exception type :', etype)
+            print('Exception value:', value)
+            print('Traceback      :', tb)
+
         def validate_stb(stb):
             """validate structured traceback return type
-            
+
             return type of CustomTB *should* be a list of strings, but allow
             single strings or None, which are harmless.
-            
+
             This function will *always* return a list of strings,
             and will raise a TypeError if stb is inappropriate.
             """
             msg = "CustomTB must return list of strings, not %r" % stb
             if stb is None:
                 return []
-            elif isinstance(stb, basestring):
+            elif isinstance(stb, str):
                 return [stb]
             elif not isinstance(stb, list):
                 raise TypeError(msg)
             # it's a list
             for line in stb:
                 # check every element
-                if not isinstance(line, basestring):
+                if not isinstance(line, str):
                     raise TypeError(msg)
             return stb
 
@@ -1592,7 +2017,7 @@ class InteractiveShell(SingletonConfigurable):
         else:
             def wrapped(self,etype,value,tb,tb_offset=None):
                 """wrap CustomTB handler, to protect IPython from user code
-                
+
                 This makes it harder (but not impossible) for custom exception
                 handlers to crash IPython.
                 """
@@ -1602,11 +2027,11 @@ class InteractiveShell(SingletonConfigurable):
                 except:
                     # clear custom handler immediately
                     self.set_custom_exc((), None)
-                    print("Custom TB Handler failed, unregistering", file=io.stderr)
+                    print("Custom TB Handler failed, unregistering", file=sys.stderr)
                     # show the exception in handler first
                     stb = self.InteractiveTB.structured_traceback(*sys.exc_info())
-                    print(self.InteractiveTB.stb2text(stb), file=io.stdout)
-                    print("The original exception:", file=io.stdout)
+                    print(self.InteractiveTB.stb2text(stb))
+                    print("The original exception:")
                     stb = self.InteractiveTB.structured_traceback(
                                             (etype,value,tb), tb_offset=tb_offset
                     )
@@ -1616,35 +2041,35 @@ class InteractiveShell(SingletonConfigurable):
         self.custom_exceptions = exc_tuple
 
     def excepthook(self, etype, value, tb):
-      """One more defense for GUI apps that call sys.excepthook.
+        """One more defense for GUI apps that call sys.excepthook.
 
-      GUI frameworks like wxPython trap exceptions and call
-      sys.excepthook themselves.  I guess this is a feature that
-      enables them to keep running after exceptions that would
-      otherwise kill their mainloop. This is a bother for IPython
-      which excepts to catch all of the program exceptions with a try:
-      except: statement.
+        GUI frameworks like wxPython trap exceptions and call
+        sys.excepthook themselves.  I guess this is a feature that
+        enables them to keep running after exceptions that would
+        otherwise kill their mainloop. This is a bother for IPython
+        which expects to catch all of the program exceptions with a try:
+        except: statement.
 
-      Normally, IPython sets sys.excepthook to a CrashHandler instance, so if
-      any app directly invokes sys.excepthook, it will look to the user like
-      IPython crashed.  In order to work around this, we can disable the
-      CrashHandler and replace it with this excepthook instead, which prints a
-      regular traceback using our InteractiveTB.  In this fashion, apps which
-      call sys.excepthook will generate a regular-looking exception from
-      IPython, and the CrashHandler will only be triggered by real IPython
-      crashes.
+        Normally, IPython sets sys.excepthook to a CrashHandler instance, so if
+        any app directly invokes sys.excepthook, it will look to the user like
+        IPython crashed.  In order to work around this, we can disable the
+        CrashHandler and replace it with this excepthook instead, which prints a
+        regular traceback using our InteractiveTB.  In this fashion, apps which
+        call sys.excepthook will generate a regular-looking exception from
+        IPython, and the CrashHandler will only be triggered by real IPython
+        crashes.
 
-      This hook should be used sparingly, only in places which are not likely
-      to be true IPython errors.
-      """
-      self.showtraceback((etype,value,tb),tb_offset=0)
+        This hook should be used sparingly, only in places which are not likely
+        to be true IPython errors.
+        """
+        self.showtraceback((etype, value, tb), tb_offset=0)
 
     def _get_exc_info(self, exc_tuple=None):
         """get exc_info from a given tuple, sys.exc_info() or sys.last_type etc.
-        
+
         Ensures sys.last_type,value,traceback hold the exc_info we found,
         from whichever source.
-        
+
         raises ValueError if none of these contain any information
         """
         if exc_tuple is None:
@@ -1656,10 +2081,10 @@ class InteractiveShell(SingletonConfigurable):
             if hasattr(sys, 'last_type'):
                 etype, value, tb = sys.last_type, sys.last_value, \
                                    sys.last_traceback
-        
+
         if etype is None:
             raise ValueError("No exception to find")
-        
+
         # Now store the exception info in sys.last_type etc.
         # WARNING: these variables are somewhat deprecated and not
         # necessarily safe to use in a threaded environment, but tools
@@ -1668,18 +2093,27 @@ class InteractiveShell(SingletonConfigurable):
         sys.last_type = etype
         sys.last_value = value
         sys.last_traceback = tb
-        
+
         return etype, value, tb
-    
+
     def show_usage_error(self, exc):
         """Show a short message for UsageErrors
-        
+
         These are special exceptions that shouldn't show a traceback.
         """
-        self.write_err("UsageError: %s" % exc)
-    
-    def showtraceback(self,exc_tuple = None,filename=None,tb_offset=None,
-                      exception_only=False):
+        print("UsageError: %s" % exc, file=sys.stderr)
+
+    def get_exception_only(self, exc_tuple=None):
+        """
+        Return as a string (ending with a newline) the exception that
+        just occurred, without any traceback.
+        """
+        etype, value, tb = self._get_exc_info(exc_tuple)
+        msg = traceback.format_exception_only(etype, value)
+        return ''.join(msg)
+
+    def showtraceback(self, exc_tuple=None, filename=None, tb_offset=None,
+                      exception_only=False, running_compiled_code=False):
         """Display the exception that just occurred.
 
         If nothing is known about the exception, this is the method which
@@ -1695,13 +2129,13 @@ class InteractiveShell(SingletonConfigurable):
             try:
                 etype, value, tb = self._get_exc_info(exc_tuple)
             except ValueError:
-                self.write_err('No traceback available to show.\n')
+                print('No traceback available to show.', file=sys.stderr)
                 return
-            
+
             if issubclass(etype, SyntaxError):
                 # Though this won't be called by syntax errors in the input
                 # line, there may be SyntaxError cases with imported code.
-                self.showsyntaxerror(filename)
+                self.showsyntaxerror(filename, running_compiled_code)
             elif etype is UsageError:
                 self.show_usage_error(value)
             else:
@@ -1711,16 +2145,38 @@ class InteractiveShell(SingletonConfigurable):
                     stb.extend(self.InteractiveTB.get_exception_only(etype,
                                                                      value))
                 else:
-                    try:
-                        # Exception classes can customise their traceback - we
-                        # use this in IPython.parallel for exceptions occurring
-                        # in the engines. This should return a list of strings.
-                        stb = value._render_traceback_()
-                    except Exception:
-                        stb = self.InteractiveTB.structured_traceback(etype,
-                                            value, tb, tb_offset=tb_offset)
 
-                    self._showtraceback(etype, value, stb)
+                    def contains_exceptiongroup(val):
+                        if val is None:
+                            return False
+                        return isinstance(
+                            val, BaseExceptionGroup
+                        ) or contains_exceptiongroup(val.__context__)
+
+                    if contains_exceptiongroup(value):
+                        # fall back to native exception formatting until ultratb
+                        # supports exception groups
+                        traceback.print_exc()
+                    else:
+                        try:
+                            # Exception classes can customise their traceback - we
+                            # use this in IPython.parallel for exceptions occurring
+                            # in the engines. This should return a list of strings.
+                            if hasattr(value, "_render_traceback_"):
+                                stb = value._render_traceback_()
+                            else:
+                                stb = self.InteractiveTB.structured_traceback(
+                                    etype, value, tb, tb_offset=tb_offset
+                                )
+
+                        except Exception:
+                            print(
+                                "Unexpected exception formatting exception. Falling back to standard exception"
+                            )
+                            traceback.print_exc()
+                            return None
+
+                        self._showtraceback(etype, value, stb)
                     if self.call_pdb:
                         # drop into debugger
                         self.debugger(force=True)
@@ -1730,17 +2186,21 @@ class InteractiveShell(SingletonConfigurable):
                 self._showtraceback(etype, value, stb)
 
         except KeyboardInterrupt:
-            self.write_err("\nKeyboardInterrupt\n")
+            print('\n' + self.get_exception_only(), file=sys.stderr)
 
-    def _showtraceback(self, etype, evalue, stb):
+    def _showtraceback(self, etype, evalue, stb: str):
         """Actually show a traceback.
 
         Subclasses may override this method to put the traceback on a different
         place, like a side channel.
         """
-        print(self.InteractiveTB.stb2text(stb), file=io.stdout)
+        val = self.InteractiveTB.stb2text(stb)
+        try:
+            print(val)
+        except UnicodeEncodeError:
+            print(val.encode("utf-8", "backslashreplace").decode())
 
-    def showsyntaxerror(self, filename=None):
+    def showsyntaxerror(self, filename=None, running_compiled_code=False):
         """Display the syntax error that just occurred.
 
         This doesn't display a stack trace because there isn't one.
@@ -1748,6 +2208,9 @@ class InteractiveShell(SingletonConfigurable):
         If a filename is given, it is stuffed in the exception instead
         of what was there before (because Python's parser always uses
         "<string>" when reading from a string).
+
+        If the syntax error occurred when running a compiled code (i.e. running_compile_code=True),
+        longer stack trace will be displayed.
         """
         etype, value, last_traceback = self._get_exc_info()
 
@@ -1757,154 +2220,36 @@ class InteractiveShell(SingletonConfigurable):
             except:
                 # Not the format we expect; leave it alone
                 pass
-        
-        stb = self.SyntaxTB.structured_traceback(etype, value, [])
+
+        # If the error occurred when executing compiled code, we should provide full stacktrace.
+        elist = traceback.extract_tb(last_traceback) if running_compiled_code else []
+        stb = self.SyntaxTB.structured_traceback(etype, value, elist)
         self._showtraceback(etype, value, stb)
 
     # This is overridden in TerminalInteractiveShell to show a message about
     # the %paste magic.
     def showindentationerror(self):
-        """Called by run_cell when there's an IndentationError in code entered
+        """Called by _run_cell when there's an IndentationError in code entered
         at the prompt.
 
         This is overridden in TerminalInteractiveShell to show a message about
         the %paste magic."""
         self.showsyntaxerror()
 
-    #-------------------------------------------------------------------------
-    # Things related to readline
-    #-------------------------------------------------------------------------
-
-    def init_readline(self):
-        """Command history completion/saving/reloading."""
-
-        if self.readline_use:
-            import IPython.utils.rlineimpl as readline
-
-        self.rl_next_input = None
-        self.rl_do_indent = False
-
-        if not self.readline_use or not readline.have_readline:
-            self.has_readline = False
-            self.readline = None
-            # Set a number of methods that depend on readline to be no-op
-            self.readline_no_record = no_op_context
-            self.set_readline_completer = no_op
-            self.set_custom_completer = no_op
-            if self.readline_use:
-                warn('Readline services not available or not loaded.')
-        else:
-            self.has_readline = True
-            self.readline = readline
-            sys.modules['readline'] = readline
-
-            # Platform-specific configuration
-            if os.name == 'nt':
-                # FIXME - check with Frederick to see if we can harmonize
-                # naming conventions with pyreadline to avoid this
-                # platform-dependent check
-                self.readline_startup_hook = readline.set_pre_input_hook
-            else:
-                self.readline_startup_hook = readline.set_startup_hook
-
-            # Load user's initrc file (readline config)
-            # Or if libedit is used, load editrc.
-            inputrc_name = os.environ.get('INPUTRC')
-            if inputrc_name is None:
-                inputrc_name = '.inputrc'
-                if readline.uses_libedit:
-                    inputrc_name = '.editrc'
-                inputrc_name = os.path.join(self.home_dir, inputrc_name)
-            if os.path.isfile(inputrc_name):
-                try:
-                    readline.read_init_file(inputrc_name)
-                except:
-                    warn('Problems reading readline initialization file <%s>'
-                         % inputrc_name)
-
-            # Configure readline according to user's prefs
-            # This is only done if GNU readline is being used.  If libedit
-            # is being used (as on Leopard) the readline config is
-            # not run as the syntax for libedit is different.
-            if not readline.uses_libedit:
-                for rlcommand in self.readline_parse_and_bind:
-                    #print "loading rl:",rlcommand  # dbg
-                    readline.parse_and_bind(rlcommand)
-
-            # Remove some chars from the delimiters list.  If we encounter
-            # unicode chars, discard them.
-            delims = readline.get_completer_delims()
-            if not py3compat.PY3:
-                delims = delims.encode("ascii", "ignore")
-            for d in self.readline_remove_delims:
-                delims = delims.replace(d, "")
-            delims = delims.replace(ESC_MAGIC, '')
-            readline.set_completer_delims(delims)
-            # Store these so we can restore them if something like rpy2 modifies
-            # them.
-            self.readline_delims = delims
-            # otherwise we end up with a monster history after a while:
-            readline.set_history_length(self.history_length)
-
-            self.refill_readline_hist()
-            self.readline_no_record = ReadlineNoRecord(self)
-
-        # Configure auto-indent for all platforms
-        self.set_autoindent(self.autoindent)
-
-    def refill_readline_hist(self):
-        # Load the last 1000 lines from history
-        self.readline.clear_history()
-        stdin_encoding = sys.stdin.encoding or "utf-8"
-        last_cell = u""
-        for _, _, cell in self.history_manager.get_tail(1000,
-                                                        include_latest=True):
-            # Ignore blank lines and consecutive duplicates
-            cell = cell.rstrip()
-            if cell and (cell != last_cell):
-                try:
-                    if self.multiline_history:
-                          self.readline.add_history(py3compat.unicode_to_str(cell,
-                                                                    stdin_encoding))
-                    else:
-                        for line in cell.splitlines():
-                            self.readline.add_history(py3compat.unicode_to_str(line,
-                                                                    stdin_encoding))
-                    last_cell = cell
-                
-                except TypeError:
-                    # The history DB can get corrupted so it returns strings
-                    # containing null bytes, which readline objects to.
-                    continue
-
     @skip_doctest
-    def set_next_input(self, s):
+    def set_next_input(self, s, replace=False):
         """ Sets the 'default' input string for the next command line.
-
-        Requires readline.
 
         Example::
 
             In [1]: _ip.set_next_input("Hello Word")
             In [2]: Hello Word_  # cursor is here
         """
-        self.rl_next_input = py3compat.cast_bytes_py2(s)
-
-    # Maybe move this to the terminal subclass?
-    def pre_readline(self):
-        """readline hook to be used at the start of each line.
-
-        Currently it handles auto-indent only."""
-
-        if self.rl_do_indent:
-            self.readline.insert_text(self._indent_current_str())
-        if self.rl_next_input is not None:
-            self.readline.insert_text(self.rl_next_input)
-            self.rl_next_input = None
+        self.rl_next_input = s
 
     def _indent_current_str(self):
         """return the current level of indentation as a string"""
-        return self.input_splitter.indent_spaces * ' '
+        return self.input_splitter.get_indent_spaces() * ' '
 
     #-------------------------------------------------------------------------
     # Things related to text completion
@@ -1915,18 +2260,20 @@ class InteractiveShell(SingletonConfigurable):
 
         This creates completion machinery that can be used by client code,
         either interactively in-process (typically triggered by the readline
-        library), programatically (such as in test suites) or out-of-prcess
+        library), programmatically (such as in test suites) or out-of-process
         (typically over the network by remote frontends).
         """
         from IPython.core.completer import IPCompleter
-        from IPython.core.completerlib import (module_completer,
-                magic_run_completer, cd_completer, reset_completer)
+        from IPython.core.completerlib import (
+            cd_completer,
+            magic_run_completer,
+            module_completer,
+            reset_completer,
+        )
 
         self.Completer = IPCompleter(shell=self,
                                      namespace=self.user_ns,
                                      global_namespace=self.user_global_ns,
-                                     alias_table=self.alias_manager.alias_table,
-                                     use_readline=self.has_readline,
                                      parent=self,
                                      )
         self.configurables.append(self.Completer)
@@ -1938,41 +2285,35 @@ class InteractiveShell(SingletonConfigurable):
 
         self.set_hook('complete_command', module_completer, str_key = 'import')
         self.set_hook('complete_command', module_completer, str_key = 'from')
+        self.set_hook('complete_command', module_completer, str_key = '%aimport')
         self.set_hook('complete_command', magic_run_completer, str_key = '%run')
         self.set_hook('complete_command', cd_completer, str_key = '%cd')
         self.set_hook('complete_command', reset_completer, str_key = '%reset')
 
-        # Only configure readline if we truly are using readline.  IPython can
-        # do tab-completion over the network, in GUIs, etc, where readline
-        # itself may be absent
-        if self.has_readline:
-            self.set_readline_completer()
-
+    @skip_doctest
     def complete(self, text, line=None, cursor_pos=None):
         """Return the completed text and a list of completions.
 
         Parameters
         ----------
-
-           text : string
-             A string of text to be completed on.  It can be given as empty and
-             instead a line/position pair are given.  In this case, the
-             completer itself will split the line like readline does.
-
-           line : string, optional
-             The complete line that text is part of.
-
-           cursor_pos : int, optional
-             The position of the cursor on the input line.
+        text : string
+            A string of text to be completed on.  It can be given as empty and
+            instead a line/position pair are given.  In this case, the
+            completer itself will split the line like readline does.
+        line : string, optional
+            The complete line that text is part of.
+        cursor_pos : int, optional
+            The position of the cursor on the input line.
 
         Returns
         -------
-          text : string
+        text : string
             The actual text that was completed.
-
-          matches : list
+        matches : list
             A sorted list with all possible completions.
 
+        Notes
+        -----
         The optional arguments allow the completion to take more context into
         account, and are part of the low-level completion API.
 
@@ -1981,8 +2322,8 @@ class InteractiveShell(SingletonConfigurable):
         exposing it as a method, it can be used by other non-readline
         environments (such as GUIs) for text completion.
 
-        Simple usage example:
-
+        Examples
+        --------
         In [1]: x = 'hello'
 
         In [2]: _ip.complete('x.l')
@@ -1993,18 +2334,23 @@ class InteractiveShell(SingletonConfigurable):
         with self.builtin_trap:
             return self.Completer.complete(text, line, cursor_pos)
 
-    def set_custom_completer(self, completer, pos=0):
+    def set_custom_completer(self, completer, pos=0) -> None:
         """Adds a new custom completer function.
 
         The position argument (defaults to 0) is the index in the completers
-        list where you want the completer to be inserted."""
+        list where you want the completer to be inserted.
 
-        newcomp = types.MethodType(completer,self.Completer)
-        self.Completer.matchers.insert(pos,newcomp)
+        `completer` should have the following signature::
 
-    def set_readline_completer(self):
-        """Reset readline's completer to be our own."""
-        self.readline.set_completer(self.Completer.rlcomplete)
+            def completion(self: Completer, text: string) -> List[str]:
+                raise NotImplementedError
+
+        It will be bound to the current Completer instance and pass some text
+        and return a list with current completions to suggest to the user.
+        """
+
+        newcomp = types.MethodType(completer, self.Completer)
+        self.Completer.custom_matchers.insert(pos,newcomp)
 
     def set_completer_frame(self, frame=None):
         """Set the frame of the completer."""
@@ -2028,14 +2374,14 @@ class InteractiveShell(SingletonConfigurable):
 
         # Expose as public API from the magics manager
         self.register_magics = self.magics_manager.register
-        self.register_magic_function = self.magics_manager.register_function
-        self.define_magic = self.magics_manager.define_magic
 
         self.register_magics(m.AutoMagics, m.BasicMagics, m.CodeMagics,
-            m.ConfigMagics, m.DeprecatedMagics, m.DisplayMagics, m.ExecutionMagics,
+            m.ConfigMagics, m.DisplayMagics, m.ExecutionMagics,
             m.ExtensionMagics, m.HistoryMagics, m.LoggingMagics,
-            m.NamespaceMagics, m.OSMagics, m.PylabMagics, m.ScriptMagics,
+            m.NamespaceMagics, m.OSMagics, m.PackagingMagics,
+            m.PylabMagics, m.ScriptMagics,
         )
+        self.register_magics(m.AsyncMagics)
 
         # Register Magic Aliases
         mman = self.magics_manager
@@ -2051,63 +2397,126 @@ class InteractiveShell(SingletonConfigurable):
         # FIXME: Move the color initialization to the DisplayHook, which
         # should be split into a prompt manager and displayhook. We probably
         # even need a centralize colors management object.
-        self.magic('colors %s' % self.colors)
+        self.run_line_magic('colors', self.colors)
 
-    def run_line_magic(self, magic_name, line):
+    # Defined here so that it's included in the documentation
+    @functools.wraps(magic.MagicsManager.register_function)
+    def register_magic_function(self, func, magic_kind='line', magic_name=None):
+        self.magics_manager.register_function(
+            func, magic_kind=magic_kind, magic_name=magic_name
+        )
+
+    def _find_with_lazy_load(self, /, type_, magic_name: str):
+        """
+        Try to find a magic potentially lazy-loading it.
+
+        Parameters
+        ----------
+
+        type_: "line"|"cell"
+            the type of magics we are trying to find/lazy load.
+        magic_name: str
+            The name of the magic we are trying to find/lazy load
+
+
+        Note that this may have any side effects
+        """
+        finder = {"line": self.find_line_magic, "cell": self.find_cell_magic}[type_]
+        fn = finder(magic_name)
+        if fn is not None:
+            return fn
+        lazy = self.magics_manager.lazy_magics.get(magic_name)
+        if lazy is None:
+            return None
+
+        self.run_line_magic("load_ext", lazy)
+        res = finder(magic_name)
+        return res
+
+    def run_line_magic(self, magic_name: str, line: str, _stack_depth=1):
         """Execute the given line magic.
 
         Parameters
         ----------
         magic_name : str
-          Name of the desired magic function, without '%' prefix.
-
+            Name of the desired magic function, without '%' prefix.
         line : str
-          The rest of the input line as a single string.
+            The rest of the input line as a single string.
+        _stack_depth : int
+            If run_line_magic() is called from magic() then _stack_depth=2.
+            This is added to ensure backward compatibility for use of 'get_ipython().magic()'
         """
-        fn = self.find_line_magic(magic_name)
+        fn = self._find_with_lazy_load("line", magic_name)
+        if fn is None:
+            lazy = self.magics_manager.lazy_magics.get(magic_name)
+            if lazy:
+                self.run_line_magic("load_ext", lazy)
+                fn = self.find_line_magic(magic_name)
         if fn is None:
             cm = self.find_cell_magic(magic_name)
             etpl = "Line magic function `%%%s` not found%s."
             extra = '' if cm is None else (' (But cell magic `%%%%%s` exists, '
                                     'did you mean that instead?)' % magic_name )
-            error(etpl % (magic_name, extra))
+            raise UsageError(etpl % (magic_name, extra))
         else:
             # Note: this is the distance in the stack to the user's frame.
             # This will need to be updated if the internal calling logic gets
             # refactored, or else we'll be expanding the wrong variables.
-            stack_depth = 2
-            magic_arg_s = self.var_expand(line, stack_depth)
+
+            # Determine stack_depth depending on where run_line_magic() has been called
+            stack_depth = _stack_depth
+            if getattr(fn, magic.MAGIC_NO_VAR_EXPAND_ATTR, False):
+                # magic has opted out of var_expand
+                magic_arg_s = line
+            else:
+                magic_arg_s = self.var_expand(line, stack_depth)
             # Put magic args in a list so we can call with f(*a) syntax
             args = [magic_arg_s]
             kwargs = {}
             # Grab local namespace if we need it:
             if getattr(fn, "needs_local_scope", False):
-                kwargs['local_ns'] = sys._getframe(stack_depth).f_locals
+                kwargs['local_ns'] = self.get_local_scope(stack_depth)
             with self.builtin_trap:
-                result = fn(*args,**kwargs)
+                result = fn(*args, **kwargs)
+
+            # The code below prevents the output from being displayed
+            # when using magics with decorator @output_can_be_silenced
+            # when the last Python token in the expression is a ';'.
+            if getattr(fn, magic.MAGIC_OUTPUT_CAN_BE_SILENCED, False):
+                if DisplayHook.semicolon_at_end_of_expression(magic_arg_s):
+                    return None
+
             return result
+
+    def get_local_scope(self, stack_depth):
+        """Get local scope at given stack depth.
+
+        Parameters
+        ----------
+        stack_depth : int
+            Depth relative to calling frame
+        """
+        return sys._getframe(stack_depth + 1).f_locals
 
     def run_cell_magic(self, magic_name, line, cell):
         """Execute the given cell magic.
-        
+
         Parameters
         ----------
         magic_name : str
-          Name of the desired magic function, without '%' prefix.
-
+            Name of the desired magic function, without '%' prefix.
         line : str
-          The rest of the first input line as a single string.
-
+            The rest of the first input line as a single string.
         cell : str
-          The body of the cell as a (possibly multiline) string.
+            The body of the cell as a (possibly multiline) string.
         """
-        fn = self.find_cell_magic(magic_name)
+        fn = self._find_with_lazy_load("cell", magic_name)
         if fn is None:
             lm = self.find_line_magic(magic_name)
             etpl = "Cell magic `%%{0}` not found{1}."
             extra = '' if lm is None else (' (But line magic `%{0}` exists, '
                             'did you mean that instead?)'.format(magic_name))
-            error(etpl.format(magic_name, extra))
+            raise UsageError(etpl.format(magic_name, extra))
         elif cell == '':
             message = '%%{0} is a cell magic, but the cell body is empty.'.format(magic_name)
             if self.find_line_magic(magic_name) is not None:
@@ -2118,9 +2527,26 @@ class InteractiveShell(SingletonConfigurable):
             # This will need to be updated if the internal calling logic gets
             # refactored, or else we'll be expanding the wrong variables.
             stack_depth = 2
-            magic_arg_s = self.var_expand(line, stack_depth)
+            if getattr(fn, magic.MAGIC_NO_VAR_EXPAND_ATTR, False):
+                # magic has opted out of var_expand
+                magic_arg_s = line
+            else:
+                magic_arg_s = self.var_expand(line, stack_depth)
+            kwargs = {}
+            if getattr(fn, "needs_local_scope", False):
+                kwargs['local_ns'] = self.user_ns
+
             with self.builtin_trap:
-                result = fn(magic_arg_s, cell)
+                args = (magic_arg_s, cell)
+                result = fn(*args, **kwargs)
+
+            # The code below prevents the output from being displayed
+            # when using magics with decorator @output_can_be_silenced
+            # when the last Python token in the expression is a ';'.
+            if getattr(fn, magic.MAGIC_OUTPUT_CAN_BE_SILENCED, False):
+                if DisplayHook.semicolon_at_end_of_expression(cell):
+                    return None
+
             return result
 
     def find_line_magic(self, magic_name):
@@ -2142,7 +2568,11 @@ class InteractiveShell(SingletonConfigurable):
         return self.magics_manager.magics[magic_kind].get(magic_name)
 
     def magic(self, arg_s):
-        """DEPRECATED. Use run_line_magic() instead.
+        """
+        DEPRECATED
+
+        Deprecated since IPython 0.13 (warning added in
+        8.1), use run_line_magic(magic_name, parameter_s).
 
         Call a magic function by name.
 
@@ -2160,10 +2590,16 @@ class InteractiveShell(SingletonConfigurable):
         valid Python code you can type at the interpreter, including loops and
         compound statements.
         """
+        warnings.warn(
+            "`magic(...)` is deprecated since IPython 0.13 (warning added in "
+            "8.1), use run_line_magic(magic_name, parameter_s).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         # TODO: should we issue a loud deprecation warning here?
         magic_name, _, magic_arg_s = arg_s.partition(' ')
         magic_name = magic_name.lstrip(prefilter.ESC_MAGIC)
-        return self.run_line_magic(magic_name, magic_arg_s)
+        return self.run_line_magic(magic_name, magic_arg_s, _stack_depth=2)
 
     #-------------------------------------------------------------------------
     # Things related to macros
@@ -2183,7 +2619,7 @@ class InteractiveShell(SingletonConfigurable):
 
         from IPython.core import macro
 
-        if isinstance(themacro, basestring):
+        if isinstance(themacro, str):
             themacro = macro.Macro(themacro)
         if not isinstance(themacro, macro.Macro):
             raise ValueError('A macro must be a string or a Macro instance.')
@@ -2199,9 +2635,9 @@ class InteractiveShell(SingletonConfigurable):
         Parameters
         ----------
         cmd : str
-          Command to execute (can not end in '&', as background processes are
-          not supported.  Should not be a command that expects input
-          other than simple text.
+            Command to execute (can not end in '&', as background processes are
+            not supported.  Should not be a command that expects input
+            other than simple text.
         """
         if cmd.rstrip().endswith('&'):
             # this is *far* from a rigorous test
@@ -2217,33 +2653,67 @@ class InteractiveShell(SingletonConfigurable):
         self.user_ns['_exit_code'] = system(self.var_expand(cmd, depth=1))
 
     def system_raw(self, cmd):
-        """Call the given cmd in a subprocess using os.system
+        """Call the given cmd in a subprocess using os.system on Windows or
+        subprocess.call using the system shell on other platforms.
 
         Parameters
         ----------
         cmd : str
-          Command to execute.
+            Command to execute.
         """
         cmd = self.var_expand(cmd, depth=1)
+        # warn if there is an IPython magic alternative.
+        if cmd == "":
+            main_cmd = ""
+        else:
+            main_cmd = cmd.split()[0]
+        has_magic_alternatives = ("pip", "conda", "cd")
+
+        if main_cmd in has_magic_alternatives:
+            warnings.warn(
+                (
+                    "You executed the system command !{0} which may not work "
+                    "as expected. Try the IPython magic %{0} instead."
+                ).format(main_cmd)
+            )
+
         # protect os.system from UNC paths on Windows, which it can't handle:
         if sys.platform == 'win32':
             from IPython.utils._process_win32 import AvoidUNCPath
             with AvoidUNCPath() as path:
                 if path is not None:
                     cmd = '"pushd %s &&"%s' % (path, cmd)
-                cmd = py3compat.unicode_to_str(cmd)
-                ec = os.system(cmd)
+                try:
+                    ec = os.system(cmd)
+                except KeyboardInterrupt:
+                    print('\n' + self.get_exception_only(), file=sys.stderr)
+                    ec = -2
         else:
-            cmd = py3compat.unicode_to_str(cmd)
-            ec = os.system(cmd)
-            # The high byte is the exit code, the low byte is a signal number
-            # that we discard for now. See the docs for os.wait()
-            if ec > 255:
-                ec >>= 8
-        
+            # For posix the result of the subprocess.call() below is an exit
+            # code, which by convention is zero for success, positive for
+            # program failure.  Exit codes above 128 are reserved for signals,
+            # and the formula for converting a signal to an exit code is usually
+            # signal_number+128.  To more easily differentiate between exit
+            # codes and signals, ipython uses negative numbers.  For instance
+            # since control-c is signal 2 but exit code 130, ipython's
+            # _exit_code variable will read -2.  Note that some shells like
+            # csh and fish don't follow sh/bash conventions for exit codes.
+            executable = os.environ.get('SHELL', None)
+            try:
+                # Use env shell instead of default /bin/sh
+                ec = subprocess.call(cmd, shell=True, executable=executable)
+            except KeyboardInterrupt:
+                # intercept control-C; a long traceback is not useful here
+                print('\n' + self.get_exception_only(), file=sys.stderr)
+                ec = 130
+            if ec > 128:
+                ec = -(ec - 128)
+
         # We explicitly do NOT return the subprocess status code, because
         # a non-None value would trigger :func:`sys.displayhook` calls.
-        # Instead, we store the exit_code in user_ns.
+        # Instead, we store the exit_code in user_ns.  Note the semantics
+        # of _exit_code: for control-c, _exit_code == -signal.SIGNIT,
+        # but raising SystemExit(_exit_code) will give status 254!
         self.user_ns['_exit_code'] = ec
 
     # use piped system by default, because it is better behaved
@@ -2255,18 +2725,18 @@ class InteractiveShell(SingletonConfigurable):
         Parameters
         ----------
         cmd : str
-          Command to execute (can not end in '&', as background processes are
-          not supported.
+            Command to execute (can not end in '&', as background processes are
+            not supported.
         split : bool, optional
-          If True, split the output into an IPython SList.  Otherwise, an
-          IPython LSString is returned.  These are objects similar to normal
-          lists and strings, with a few convenience attributes for easier
-          manipulation of line-based output.  You can use '?' on them for
-          details.
+            If True, split the output into an IPython SList.  Otherwise, an
+            IPython LSString is returned.  These are objects similar to normal
+            lists and strings, with a few convenience attributes for easier
+            manipulation of line-based output.  You can use '?' on them for
+            details.
         depth : int, optional
-          How many frames above the caller are the local variables which should
-          be expanded in the command string? The default (0) assumes that the
-          expansion variables are in the stack frame calling this function.
+            How many frames above the caller are the local variables which should
+            be expanded in the command string? The default (0) assumes that the
+            expansion variables are in the stack frame calling this function.
         """
         if cmd.rstrip().endswith('&'):
             # this is *far* from a rigorous test
@@ -2285,7 +2755,6 @@ class InteractiveShell(SingletonConfigurable):
     def init_alias(self):
         self.alias_manager = AliasManager(shell=self, parent=self)
         self.configurables.append(self.alias_manager)
-        self.ns_table['alias'] = self.alias_manager.alias_table,
 
     #-------------------------------------------------------------------------
     # Things related to extensions
@@ -2332,16 +2801,9 @@ class InteractiveShell(SingletonConfigurable):
         """
         if not self.show_rewritten_input:
             return
-        
-        rw = self.prompt_manager.render('rewrite') + cmd
 
-        try:
-            # plain ascii works better w/ pyreadline, on some machines, so
-            # we use it and only print uncolored rewrite if we have unicode
-            rw = str(rw)
-            print(rw, file=io.stdout)
-        except UnicodeEncodeError:
-            print("------> " + cmd)
+        # This is overridden in TerminalInteractiveShell to use fancy prompts
+        print("------> " + cmd)
 
     #-------------------------------------------------------------------------
     # Things related to extracting values/expressions from kernel and user_ns
@@ -2349,28 +2811,28 @@ class InteractiveShell(SingletonConfigurable):
 
     def _user_obj_error(self):
         """return simple exception dict
-        
-        for use in user_variables / expressions
+
+        for use in user_expressions
         """
-        
+
         etype, evalue, tb = self._get_exc_info()
         stb = self.InteractiveTB.get_exception_only(etype, evalue)
-        
+
         exc_info = {
-            u'status' : 'error',
-            u'traceback' : stb,
-            u'ename' : unicode(etype.__name__),
-            u'evalue' : py3compat.safe_unicode(evalue),
+            "status": "error",
+            "traceback": stb,
+            "ename": etype.__name__,
+            "evalue": py3compat.safe_unicode(evalue),
         }
 
         return exc_info
-    
+
     def _format_user_obj(self, obj):
         """format a user object to display dict
-        
-        for use in user_expressions / variables
+
+        for use in user_expressions
         """
-        
+
         data, md = self.display_formatter.format(obj)
         value = {
             'status' : 'ok',
@@ -2378,30 +2840,6 @@ class InteractiveShell(SingletonConfigurable):
             'metadata' : md,
         }
         return value
-    
-    def user_variables(self, names):
-        """Get a list of variable names from the user's namespace.
-
-        Parameters
-        ----------
-        names : list of strings
-          A list of names of variables to be read from the user namespace.
-
-        Returns
-        -------
-        A dict, keyed by the input names and with the rich mime-type repr(s) of each value.
-        Each element will be a sub-dict of the same form as a display_data message.
-        """
-        out = {}
-        user_ns = self.user_ns
-        
-        for varname in names:
-            try:
-                value = self._format_user_obj(user_ns[varname])
-            except:
-                value = self._user_obj_error()
-            out[varname] = value
-        return out
 
     def user_expressions(self, expressions):
         """Evaluate a dict of expressions in the user's namespace.
@@ -2409,9 +2847,9 @@ class InteractiveShell(SingletonConfigurable):
         Parameters
         ----------
         expressions : dict
-          A dict with string keys and string values.  The expression values
-          should be valid Python expressions, each of which will be evaluated
-          in the user namespace.
+            A dict with string keys and string values.  The expression values
+            should be valid Python expressions, each of which will be evaluated
+            in the user namespace.
 
         Returns
         -------
@@ -2421,8 +2859,8 @@ class InteractiveShell(SingletonConfigurable):
         out = {}
         user_ns = self.user_ns
         global_ns = self.user_global_ns
-        
-        for key, expr in expressions.iteritems():
+
+        for key, expr in expressions.items():
             try:
                 value = self._format_user_obj(eval(expr, global_ns, user_ns))
             except:
@@ -2437,7 +2875,7 @@ class InteractiveShell(SingletonConfigurable):
     def ex(self, cmd):
         """Execute a normal python statement in user namespace."""
         with self.builtin_trap:
-            exec cmd in self.user_global_ns, self.user_ns
+            exec(cmd, self.user_global_ns, self.user_ns)
 
     def ev(self, expr):
         """Evaluate python expression expr in user namespace.
@@ -2447,7 +2885,7 @@ class InteractiveShell(SingletonConfigurable):
         with self.builtin_trap:
             return eval(expr, self.user_global_ns, self.user_ns)
 
-    def safe_execfile(self, fname, *where, **kw):
+    def safe_execfile(self, fname, *where, exit_ignore=False, raise_exceptions=False, shell_futures=False):
         """A safe version of the builtin execfile().
 
         This version will never throw an exception, but instead print
@@ -2458,7 +2896,7 @@ class InteractiveShell(SingletonConfigurable):
         ----------
         fname : string
             The name of the file to be executed.
-        where : tuple
+        *where : tuple
             One or two namespaces, passed to execfile() as (globals,locals).
             If only one is given, it is passed as both.
         exit_ignore : bool (False)
@@ -2466,16 +2904,18 @@ class InteractiveShell(SingletonConfigurable):
             silenced for zero status, as it is so common).
         raise_exceptions : bool (False)
             If True raise exceptions everywhere. Meant for testing.
+        shell_futures : bool (False)
+            If True, the code will share future statements with the interactive
+            shell. It will both be affected by previous __future__ imports, and
+            any __future__ imports in the code will affect the shell. If False,
+            __future__ imports are not shared in either direction.
 
         """
-        kw.setdefault('exit_ignore', False)
-        kw.setdefault('raise_exceptions', False)
-
-        fname = os.path.abspath(os.path.expanduser(fname))
+        fname = Path(fname).expanduser().resolve()
 
         # Make sure we can open the file
         try:
-            with open(fname) as thefile:
+            with fname.open("rb"):
                 pass
         except:
             warn('Could not open file <%s> for safe execution.' % fname)
@@ -2484,11 +2924,14 @@ class InteractiveShell(SingletonConfigurable):
         # Find things also in current directory.  This is needed to mimic the
         # behavior of running a script from the system command line, where
         # Python inserts the script's directory into sys.path
-        dname = os.path.dirname(fname)
+        dname = str(fname.parent)
 
-        with prepended_to_syspath(dname):
+        with prepended_to_syspath(dname), self.builtin_trap:
             try:
-                py3compat.execfile(fname,*where)
+                glob, loc = (where + (None, ))[:2]
+                py3compat.execfile(
+                    fname, glob, loc,
+                    self.compile if shell_futures else None)
             except SystemExit as status:
                 # If the call was made with 0 or None exit status (sys.exit(0)
                 # or sys.exit() ), don't bother showing a traceback, as both of
@@ -2499,29 +2942,38 @@ class InteractiveShell(SingletonConfigurable):
                 # 0
                 # For other exit status, we show the exception unless
                 # explicitly silenced, but only in short form.
-                if kw['raise_exceptions']:
-                    raise
-                if status.code and not kw['exit_ignore']:
-                    self.showtraceback(exception_only=True)
+                if status.code:
+                    if raise_exceptions:
+                        raise
+                    if not exit_ignore:
+                        self.showtraceback(exception_only=True)
             except:
-                if kw['raise_exceptions']:
+                if raise_exceptions:
                     raise
-                self.showtraceback()
+                # tb offset is 2 because we wrap execfile
+                self.showtraceback(tb_offset=2)
 
-    def safe_execfile_ipy(self, fname):
-        """Like safe_execfile, but for .ipy files with IPython syntax.
+    def safe_execfile_ipy(self, fname, shell_futures=False, raise_exceptions=False):
+        """Like safe_execfile, but for .ipy or .ipynb files with IPython syntax.
 
         Parameters
         ----------
         fname : str
             The name of the file to execute.  The filename must have a
-            .ipy extension.
+            .ipy or .ipynb extension.
+        shell_futures : bool (False)
+            If True, the code will share future statements with the interactive
+            shell. It will both be affected by previous __future__ imports, and
+            any __future__ imports in the code will affect the shell. If False,
+            __future__ imports are not shared in either direction.
+        raise_exceptions : bool (False)
+            If True raise exceptions everywhere.  Meant for testing.
         """
-        fname = os.path.abspath(os.path.expanduser(fname))
+        fname = Path(fname).expanduser().resolve()
 
         # Make sure we can open the file
         try:
-            with open(fname) as thefile:
+            with fname.open("rb"):
                 pass
         except:
             warn('Could not open file <%s> for safe execution.' % fname)
@@ -2530,17 +2982,32 @@ class InteractiveShell(SingletonConfigurable):
         # Find things also in current directory.  This is needed to mimic the
         # behavior of running a script from the system command line, where
         # Python inserts the script's directory into sys.path
-        dname = os.path.dirname(fname)
+        dname = str(fname.parent)
+
+        def get_cells():
+            """generator for sequence of code blocks to run"""
+            if fname.suffix == ".ipynb":
+                from nbformat import read
+                nb = read(fname, as_version=4)
+                if not nb.cells:
+                    return
+                for cell in nb.cells:
+                    if cell.cell_type == 'code':
+                        yield cell.source
+            else:
+                yield fname.read_text(encoding="utf-8")
 
         with prepended_to_syspath(dname):
             try:
-                with open(fname) as thefile:
-                    # self.run_cell currently captures all exceptions
-                    # raised in user code.  It would be nice if there were
-                    # versions of runlines, execfile that did raise, so
-                    # we could catch the errors.
-                    self.run_cell(thefile.read(), store_history=False, shell_futures=False)
+                for cell in get_cells():
+                    result = self.run_cell(cell, silent=True, shell_futures=shell_futures)
+                    if raise_exceptions:
+                        result.raise_error()
+                    elif not result.success:
+                        break
             except:
+                if raise_exceptions:
+                    raise
                 self.showtraceback()
                 warn('Unknown failure executing file: <%s>' % fname)
 
@@ -2564,7 +3031,7 @@ class InteractiveShell(SingletonConfigurable):
                 where.update(
                     runpy.run_module(str(mod_name), run_name="__main__",
                                      alter_sys=True)
-                    )
+                            )
             except SystemExit as status:
                 if status.code:
                     raise
@@ -2572,15 +3039,159 @@ class InteractiveShell(SingletonConfigurable):
             self.showtraceback()
             warn('Unknown failure executing module: <%s>' % mod_name)
 
-    def _run_cached_cell_magic(self, magic_name, line):
-        """Special method to call a cell magic with the data stored in self.
-        """
-        cell = self._current_cell_magic_body
-        self._current_cell_magic_body = None
-        return self.run_cell_magic(magic_name, line, cell)
-
-    def run_cell(self, raw_cell, store_history=False, silent=False, shell_futures=True):
+    def run_cell(
+        self,
+        raw_cell,
+        store_history=False,
+        silent=False,
+        shell_futures=True,
+        cell_id=None,
+    ):
         """Run a complete IPython cell.
+
+        Parameters
+        ----------
+        raw_cell : str
+            The code (including IPython code such as %magic functions) to run.
+        store_history : bool
+            If True, the raw and translated cell will be stored in IPython's
+            history. For user code calling back into IPython's machinery, this
+            should be set to False.
+        silent : bool
+            If True, avoid side-effects, such as implicit displayhooks and
+            and logging.  silent=True forces store_history=False.
+        shell_futures : bool
+            If True, the code will share future statements with the interactive
+            shell. It will both be affected by previous __future__ imports, and
+            any __future__ imports in the code will affect the shell. If False,
+            __future__ imports are not shared in either direction.
+
+        Returns
+        -------
+        result : :class:`ExecutionResult`
+        """
+        result = None
+        try:
+            result = self._run_cell(
+                raw_cell, store_history, silent, shell_futures, cell_id
+            )
+        finally:
+            self.events.trigger('post_execute')
+            if not silent:
+                self.events.trigger('post_run_cell', result)
+        return result
+
+    def _run_cell(
+        self,
+        raw_cell: str,
+        store_history: bool,
+        silent: bool,
+        shell_futures: bool,
+        cell_id: str,
+    ) -> ExecutionResult:
+        """Internal method to run a complete IPython cell."""
+
+        # we need to avoid calling self.transform_cell multiple time on the same thing
+        # so we need to store some results:
+        preprocessing_exc_tuple = None
+        try:
+            transformed_cell = self.transform_cell(raw_cell)
+        except Exception:
+            transformed_cell = raw_cell
+            preprocessing_exc_tuple = sys.exc_info()
+
+        assert transformed_cell is not None
+        coro = self.run_cell_async(
+            raw_cell,
+            store_history=store_history,
+            silent=silent,
+            shell_futures=shell_futures,
+            transformed_cell=transformed_cell,
+            preprocessing_exc_tuple=preprocessing_exc_tuple,
+            cell_id=cell_id,
+        )
+
+        # run_cell_async is async, but may not actually need an eventloop.
+        # when this is the case, we want to run it using the pseudo_sync_runner
+        # so that code can invoke eventloops (for example via the %run , and
+        # `%paste` magic.
+        if self.trio_runner:
+            runner = self.trio_runner
+        elif self.should_run_async(
+            raw_cell,
+            transformed_cell=transformed_cell,
+            preprocessing_exc_tuple=preprocessing_exc_tuple,
+        ):
+            runner = self.loop_runner
+        else:
+            runner = _pseudo_sync_runner
+
+        try:
+            result = runner(coro)
+        except BaseException as e:
+            info = ExecutionInfo(
+                raw_cell, store_history, silent, shell_futures, cell_id
+            )
+            result = ExecutionResult(info)
+            result.error_in_exec = e
+            self.showtraceback(running_compiled_code=True)
+        finally:
+            return result
+
+    def should_run_async(
+        self, raw_cell: str, *, transformed_cell=None, preprocessing_exc_tuple=None
+    ) -> bool:
+        """Return whether a cell should be run asynchronously via a coroutine runner
+
+        Parameters
+        ----------
+        raw_cell : str
+            The code to be executed
+
+        Returns
+        -------
+        result: bool
+            Whether the code needs to be run with a coroutine runner or not
+        .. versionadded:: 7.0
+        """
+        if not self.autoawait:
+            return False
+        if preprocessing_exc_tuple is not None:
+            return False
+        assert preprocessing_exc_tuple is None
+        if transformed_cell is None:
+            warnings.warn(
+                "`should_run_async` will not call `transform_cell`"
+                " automatically in the future. Please pass the result to"
+                " `transformed_cell` argument and any exception that happen"
+                " during the"
+                "transform in `preprocessing_exc_tuple` in"
+                " IPython 7.17 and above.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            try:
+                cell = self.transform_cell(raw_cell)
+            except Exception:
+                # any exception during transform will be raised
+                # prior to execution
+                return False
+        else:
+            cell = transformed_cell
+        return _should_be_async(cell)
+
+    async def run_cell_async(
+        self,
+        raw_cell: str,
+        store_history=False,
+        silent=False,
+        shell_futures=True,
+        *,
+        transformed_cell: Optional[str] = None,
+        preprocessing_exc_tuple: Optional[AnyType] = None,
+        cell_id=None,
+    ) -> ExecutionResult:
+        """Run a complete IPython cell asynchronously.
 
         Parameters
         ----------
@@ -2598,106 +3209,187 @@ class InteractiveShell(SingletonConfigurable):
           shell. It will both be affected by previous __future__ imports, and
           any __future__ imports in the code will affect the shell. If False,
           __future__ imports are not shared in either direction.
+        transformed_cell: str
+          cell that was passed through transformers
+        preprocessing_exc_tuple:
+          trace if the transformation failed.
+
+        Returns
+        -------
+        result : :class:`ExecutionResult`
+
+        .. versionadded:: 7.0
         """
+        info = ExecutionInfo(raw_cell, store_history, silent, shell_futures, cell_id)
+        result = ExecutionResult(info)
+
         if (not raw_cell) or raw_cell.isspace():
-            return
-        
+            self.last_execution_succeeded = True
+            self.last_execution_result = result
+            return result
+
         if silent:
             store_history = False
 
-        self.input_transformer_manager.push(raw_cell)
-        cell = self.input_transformer_manager.source_reset()
+        if store_history:
+            result.execution_count = self.execution_count
+
+        def error_before_exec(value):
+            if store_history:
+                self.execution_count += 1
+            result.error_before_exec = value
+            self.last_execution_succeeded = False
+            self.last_execution_result = result
+            return result
+
+        self.events.trigger('pre_execute')
+        if not silent:
+            self.events.trigger('pre_run_cell', info)
+
+        if transformed_cell is None:
+            warnings.warn(
+                "`run_cell_async` will not call `transform_cell`"
+                " automatically in the future. Please pass the result to"
+                " `transformed_cell` argument and any exception that happen"
+                " during the"
+                "transform in `preprocessing_exc_tuple` in"
+                " IPython 7.17 and above.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # If any of our input transformation (input_transformer_manager or
+            # prefilter_manager) raises an exception, we store it in this variable
+            # so that we can display the error after logging the input and storing
+            # it in the history.
+            try:
+                cell = self.transform_cell(raw_cell)
+            except Exception:
+                preprocessing_exc_tuple = sys.exc_info()
+                cell = raw_cell  # cell has to exist so it can be stored/logged
+            else:
+                preprocessing_exc_tuple = None
+        else:
+            if preprocessing_exc_tuple is None:
+                cell = transformed_cell
+            else:
+                cell = raw_cell
+
+        # Do NOT store paste/cpaste magic history
+        if "get_ipython().run_line_magic(" in cell and "paste" in cell:
+            store_history = False
+
+        # Store raw and processed history
+        if store_history:
+            assert self.history_manager is not None
+            self.history_manager.store_inputs(self.execution_count, cell, raw_cell)
+        if not silent:
+            self.logger.log(cell, raw_cell)
+
+        # Display the exception if input processing failed.
+        if preprocessing_exc_tuple is not None:
+            self.showtraceback(preprocessing_exc_tuple)
+            if store_history:
+                self.execution_count += 1
+            return error_before_exec(preprocessing_exc_tuple[1])
 
         # Our own compiler remembers the __future__ environment. If we want to
         # run code with a separate __future__ environment, use the default
         # compiler
-        compiler = self.compile if shell_futures else CachingCompiler()
+        compiler = self.compile if shell_futures else self.compiler_class()
 
         with self.builtin_trap:
-            prefilter_failed = False
-            if len(cell.splitlines()) == 1:
+            cell_name = compiler.cache(cell, self.execution_count, raw_code=raw_cell)
+
+            with self.display_trap:
+                # Compile to bytecode
                 try:
-                    # use prefilter_lines to handle trailing newlines
-                    # restore trailing newline for ast.parse
-                    cell = self.prefilter_manager.prefilter_lines(cell) + '\n'
-                except AliasError as e:
-                    error(e)
-                    prefilter_failed = True
-                except Exception:
-                    # don't allow prefilter errors to crash IPython
-                    self.showtraceback()
-                    prefilter_failed = True
+                    code_ast = compiler.ast_parse(cell, filename=cell_name)
+                except self.custom_exceptions as e:
+                    etype, value, tb = sys.exc_info()
+                    self.CustomTB(etype, value, tb)
+                    return error_before_exec(e)
+                except IndentationError as e:
+                    self.showindentationerror()
+                    return error_before_exec(e)
+                except (OverflowError, SyntaxError, ValueError, TypeError,
+                        MemoryError) as e:
+                    self.showsyntaxerror()
+                    return error_before_exec(e)
 
-            # Store raw and processed history
-            if store_history:
-                self.history_manager.store_inputs(self.execution_count,
-                                                  cell, raw_cell)
-            if not silent:
-                self.logger.log(cell, raw_cell)
-
-            if not prefilter_failed:
-                # don't run if prefilter failed
-                cell_name = self.compile.cache(cell, self.execution_count)
-
-                with self.display_trap:
-                    try:
-                        code_ast = compiler.ast_parse(cell, filename=cell_name)
-                    except IndentationError:
-                        self.showindentationerror()
-                        if store_history:
-                            self.execution_count += 1
-                        return None
-                    except (OverflowError, SyntaxError, ValueError, TypeError,
-                            MemoryError):
-                        self.showsyntaxerror()
-                        if store_history:
-                            self.execution_count += 1
-                        return None
-                    
+                # Apply AST transformations
+                try:
                     code_ast = self.transform_ast(code_ast)
-                    
-                    interactivity = "none" if silent else self.ast_node_interactivity
-                    self.run_ast_nodes(code_ast.body, cell_name,
-                                       interactivity=interactivity, compiler=compiler)
-                    
-                    # Execute any registered post-execution functions.
-                    # unless we are silent
-                    post_exec = [] if silent else self._post_execute.iteritems()
-                    
-                    for func, status in post_exec:
-                        if self.disable_failing_post_execute and not status:
-                            continue
-                        try:
-                            func()
-                        except KeyboardInterrupt:
-                            print("\nKeyboardInterrupt", file=io.stderr)
-                        except Exception:
-                            # register as failing:
-                            self._post_execute[func] = False
-                            self.showtraceback()
-                            print('\n'.join([
-                                "post-execution function %r produced an error." % func,
-                                "If this problem persists, you can disable failing post-exec functions with:",
-                                "",
-                                "    get_ipython().disable_failing_post_execute = True"
-                            ]), file=io.stderr)
+                except InputRejected as e:
+                    self.showtraceback()
+                    return error_before_exec(e)
+
+                # Give the displayhook a reference to our ExecutionResult so it
+                # can fill in the output value.
+                self.displayhook.exec_result = result
+
+                # Execute the user code
+                interactivity = "none" if silent else self.ast_node_interactivity
+
+
+                has_raised = await self.run_ast_nodes(code_ast.body, cell_name,
+                       interactivity=interactivity, compiler=compiler, result=result)
+
+                self.last_execution_succeeded = not has_raised
+                self.last_execution_result = result
+
+                # Reset this so later displayed values do not modify the
+                # ExecutionResult
+                self.displayhook.exec_result = None
 
         if store_history:
+            assert self.history_manager is not None
             # Write output to the database. Does nothing unless
             # history output logging is enabled.
             self.history_manager.store_output(self.execution_count)
             # Each cell is a *single* input, regardless of how many lines it has
             self.execution_count += 1
-    
+
+        return result
+
+    def transform_cell(self, raw_cell):
+        """Transform an input cell before parsing it.
+
+        Static transformations, implemented in IPython.core.inputtransformer2,
+        deal with things like ``%magic`` and ``!system`` commands.
+        These run on all input.
+        Dynamic transformations, for things like unescaped magics and the exit
+        autocall, depend on the state of the interpreter.
+        These only apply to single line inputs.
+
+        These string-based transformations are followed by AST transformations;
+        see :meth:`transform_ast`.
+        """
+        # Static input transformations
+        cell = self.input_transformer_manager.transform_cell(raw_cell)
+
+        if len(cell.splitlines()) == 1:
+            # Dynamic transformations - only applied for single line commands
+            with self.builtin_trap:
+                # use prefilter_lines to handle trailing newlines
+                # restore trailing newline for ast.parse
+                cell = self.prefilter_manager.prefilter_lines(cell) + '\n'
+
+        lines = cell.splitlines(keepends=True)
+        for transform in self.input_transformers_post:
+            lines = transform(lines)
+        cell = ''.join(lines)
+
+        return cell
+
     def transform_ast(self, node):
         """Apply the AST transformations from self.ast_transformers
-        
+
         Parameters
         ----------
         node : ast.Node
-          The root node to be transformed. Typically called with the ast.Module
-          produced by parsing user input.
-        
+            The root node to be transformed. Typically called with the ast.Module
+            produced by parsing user input.
+
         Returns
         -------
         An ast.Node corresponding to the node it was called with. Note that it
@@ -2707,17 +3399,30 @@ class InteractiveShell(SingletonConfigurable):
         for transformer in self.ast_transformers:
             try:
                 node = transformer.visit(node)
-            except Exception:
-                warn("AST transformer %r threw an error. It will be unregistered." % transformer)
+            except InputRejected:
+                # User-supplied AST transformers can reject an input by raising
+                # an InputRejected.  Short-circuit in this case so that we
+                # don't unregister the transform.
+                raise
+            except Exception as e:
+                warn(
+                    "AST transformer %r threw an error. It will be unregistered. %s"
+                    % (transformer, e)
+                )
                 self.ast_transformers.remove(transformer)
-        
+
         if self.ast_transformers:
             ast.fix_missing_locations(node)
         return node
-                
 
-    def run_ast_nodes(self, nodelist, cell_name, interactivity='last_expr',
-                        compiler=compile):
+    async def run_ast_nodes(
+        self,
+        nodelist: ListType[stmt],
+        cell_name: str,
+        interactivity="last_expr",
+        compiler=compile,
+        result=None,
+    ):
         """Run a sequence of AST nodes. The execution mode depends on the
         interactivity parameter.
 
@@ -2729,18 +3434,45 @@ class InteractiveShell(SingletonConfigurable):
           Will be passed to the compiler as the filename of the cell. Typically
           the value returned by ip.compile.cache(cell).
         interactivity : str
-          'all', 'last', 'last_expr' or 'none', specifying which nodes should be
-          run interactively (displaying output from expressions). 'last_expr'
-          will run the last node interactively only if it is an expression (i.e.
-          expressions in loops or other blocks are not displayed. Other values
-          for this parameter will raise a ValueError.
+          'all', 'last', 'last_expr' , 'last_expr_or_assign' or 'none',
+          specifying which nodes should be run interactively (displaying output
+          from expressions). 'last_expr' will run the last node interactively
+          only if it is an expression (i.e. expressions in loops or other blocks
+          are not displayed) 'last_expr_or_assign' will run the last expression
+          or the last assignment. Other values for this parameter will raise a
+          ValueError.
+
         compiler : callable
           A function with the same interface as the built-in compile(), to turn
           the AST nodes into code objects. Default is the built-in compile().
+        result : ExecutionResult, optional
+          An object to store exceptions that occur during execution.
+
+        Returns
+        -------
+        True if an exception occurred while running code, False if it finished
+        running.
         """
         if not nodelist:
             return
 
+
+        if interactivity == 'last_expr_or_assign':
+            if isinstance(nodelist[-1], _assign_nodes):
+                asg = nodelist[-1]
+                if isinstance(asg, ast.Assign) and len(asg.targets) == 1:
+                    target = asg.targets[0]
+                elif isinstance(asg, _single_targets_nodes):
+                    target = asg.target
+                else:
+                    target = None
+                if isinstance(target, ast.Name):
+                    nnode = ast.Expr(ast.Name(target.id, ast.Load()))
+                    ast.fix_missing_locations(nnode)
+                    nodelist.append(nnode)
+            interactivity = 'last_expr'
+
+        _async = False
         if interactivity == 'last_expr':
             if isinstance(nodelist[-1], ast.Expr):
                 interactivity = "last"
@@ -2756,19 +3488,33 @@ class InteractiveShell(SingletonConfigurable):
         else:
             raise ValueError("Interactivity was %r" % interactivity)
 
-        exec_count = self.execution_count
-
         try:
-            for i, node in enumerate(to_run_exec):
-                mod = ast.Module([node])
-                code = compiler(mod, cell_name, "exec")
-                if self.run_code(code):
-                    return True
 
-            for i, node in enumerate(to_run_interactive):
-                mod = ast.Interactive([node])
-                code = compiler(mod, cell_name, "single")
-                if self.run_code(code):
+            def compare(code):
+                is_async = inspect.CO_COROUTINE & code.co_flags == inspect.CO_COROUTINE
+                return is_async
+
+            # refactor that to just change the mod constructor.
+            to_run = []
+            for node in to_run_exec:
+                to_run.append((node, "exec"))
+
+            for node in to_run_interactive:
+                to_run.append((node, "single"))
+
+            for node, mode in to_run:
+                if mode == "exec":
+                    mod = Module([node], [])
+                elif mode == "single":
+                    mod = ast.Interactive([node])  # type: ignore
+                with compiler.extra_flags(
+                    getattr(ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0x0)
+                    if self.autoawait
+                    else 0x0
+                ):
+                    code = compiler(mod, cell_name, mode)
+                    asy = compare(code)
+                if await self.run_code(code, result, async_=asy):
                     return True
 
             # Flush softspace
@@ -2785,11 +3531,14 @@ class InteractiveShell(SingletonConfigurable):
             # We do only one try/except outside the loop to minimize the impact
             # on runtime, and also because if any node in the node list is
             # broken, we should stop execution completely.
+            if result:
+                result.error_before_exec = sys.exc_info()[1]
             self.showtraceback()
+            return True
 
         return False
 
-    def run_code(self, code_obj):
+    async def run_code(self, code_obj, result=None, *, async_=False):
         """Execute a code object.
 
         When an exception occurs, self.showtraceback() is called to display a
@@ -2799,94 +3548,137 @@ class InteractiveShell(SingletonConfigurable):
         ----------
         code_obj : code object
           A compiled code object, to be executed
+        result : ExecutionResult, optional
+          An object to store exceptions that occur during execution.
+        async_ :  Bool (Experimental)
+          Attempt to run top-level asynchronous code in a default loop.
 
         Returns
         -------
         False : successful execution.
         True : an error occurred.
         """
-
+        # special value to say that anything above is IPython and should be
+        # hidden.
+        __tracebackhide__ = "__ipython_bottom__"
         # Set our own excepthook in case the user code tries to call it
         # directly, so that the IPython crash handler doesn't get triggered
-        old_excepthook,sys.excepthook = sys.excepthook, self.excepthook
+        old_excepthook, sys.excepthook = sys.excepthook, self.excepthook
 
         # we save the original sys.excepthook in the instance, in case config
         # code (such as magics) needs access to it.
         self.sys_excepthook = old_excepthook
-        outflag = 1  # happens in more places, so it's easier as default
+        outflag = True  # happens in more places, so it's easier as default
         try:
             try:
-                self.hooks.pre_run_code_hook()
-                #rprint('Running code', repr(code_obj)) # dbg
-                exec code_obj in self.user_global_ns, self.user_ns
+                if async_:
+                    await eval(code_obj, self.user_global_ns, self.user_ns)
+                else:
+                    exec(code_obj, self.user_global_ns, self.user_ns)
             finally:
                 # Reset our crash handler in place
                 sys.excepthook = old_excepthook
-        except SystemExit:
+        except SystemExit as e:
+            if result is not None:
+                result.error_in_exec = e
             self.showtraceback(exception_only=True)
-            warn("To exit: use 'exit', 'quit', or Ctrl-D.", level=1)
+            warn("To exit: use 'exit', 'quit', or Ctrl-D.", stacklevel=1)
+        except bdb.BdbQuit:
+            etype, value, tb = sys.exc_info()
+            if result is not None:
+                result.error_in_exec = value
+            # the BdbQuit stops here
         except self.custom_exceptions:
-            etype,value,tb = sys.exc_info()
-            self.CustomTB(etype,value,tb)
+            etype, value, tb = sys.exc_info()
+            if result is not None:
+                result.error_in_exec = value
+            self.CustomTB(etype, value, tb)
         except:
-            self.showtraceback()
+            if result is not None:
+                result.error_in_exec = sys.exc_info()[1]
+            self.showtraceback(running_compiled_code=True)
         else:
-            outflag = 0
+            outflag = False
         return outflag
 
     # For backwards compatibility
     runcode = run_code
 
+    def check_complete(self, code: str) -> Tuple[str, str]:
+        """Return whether a block of code is ready to execute, or should be continued
+
+        Parameters
+        ----------
+        code : string
+            Python input code, which can be multiline.
+
+        Returns
+        -------
+        status : str
+            One of 'complete', 'incomplete', or 'invalid' if source is not a
+            prefix of valid code.
+        indent : str
+            When status is 'incomplete', this is some whitespace to insert on
+            the next line of the prompt.
+        """
+        status, nspaces = self.input_transformer_manager.check_complete(code)
+        return status, ' ' * (nspaces or 0)
+
     #-------------------------------------------------------------------------
     # Things related to GUI support and pylab
     #-------------------------------------------------------------------------
 
+    active_eventloop: Optional[str] = None
+
     def enable_gui(self, gui=None):
         raise NotImplementedError('Implement enable_gui in a subclass')
-    
+
     def enable_matplotlib(self, gui=None):
         """Enable interactive matplotlib and inline figure support.
-        
+
         This takes the following steps:
-        
+
         1. select the appropriate eventloop and matplotlib backend
         2. set up matplotlib for interactive use with that backend
         3. configure formatters for inline figure display
         4. enable the selected gui eventloop
-        
+
         Parameters
         ----------
         gui : optional, string
-          If given, dictates the choice of matplotlib GUI backend to use
-          (should be one of IPython's supported backends, 'qt', 'osx', 'tk',
-          'gtk', 'wx' or 'inline'), otherwise we use the default chosen by
-          matplotlib (as dictated by the matplotlib build-time options plus the
-          user's matplotlibrc configuration file).  Note that not all backends
-          make sense in all contexts, for example a terminal ipython can't
-          display figures inline.
+            If given, dictates the choice of matplotlib GUI backend to use
+            (should be one of IPython's supported backends, 'qt', 'osx', 'tk',
+            'gtk', 'wx' or 'inline'), otherwise we use the default chosen by
+            matplotlib (as dictated by the matplotlib build-time options plus the
+            user's matplotlibrc configuration file).  Note that not all backends
+            make sense in all contexts, for example a terminal ipython can't
+            display figures inline.
         """
         from IPython.core import pylabtools as pt
         gui, backend = pt.find_gui_and_backend(gui, self.pylab_gui_select)
-    
+
         if gui != 'inline':
             # If we have our first gui selection, store it
             if self.pylab_gui_select is None:
                 self.pylab_gui_select = gui
             # Otherwise if they are different
             elif gui != self.pylab_gui_select:
-                print ('Warning: Cannot change to a different GUI toolkit: %s.'
+                print('Warning: Cannot change to a different GUI toolkit: %s.'
                         ' Using %s instead.' % (gui, self.pylab_gui_select))
                 gui, backend = pt.find_gui_and_backend(self.pylab_gui_select)
-        
+
         pt.activate_matplotlib(backend)
-        pt.configure_inline_support(self, backend)
-        
+
+        from matplotlib_inline.backend_inline import configure_inline_support
+
+        configure_inline_support(self, backend)
+
         # Now we must activate the gui pylab wants to use, and fix %run to take
         # plot updates into account
         self.enable_gui(gui)
         self.magics_manager.registry['ExecutionMagics'].default_runner = \
             pt.mpl_runner(self.safe_execfile)
-        
+
         return gui, backend
 
     def enable_pylab(self, gui=None, import_all=True, welcome_message=False):
@@ -2896,29 +3688,29 @@ class InteractiveShell(SingletonConfigurable):
         namespace all of numpy and pylab, and configures IPython to correctly
         interact with the GUI event loop.  The GUI backend to be used can be
         optionally selected with the optional ``gui`` argument.
-        
+
         This method only adds preloading the namespace to InteractiveShell.enable_matplotlib.
 
         Parameters
         ----------
         gui : optional, string
-          If given, dictates the choice of matplotlib GUI backend to use
-          (should be one of IPython's supported backends, 'qt', 'osx', 'tk',
-          'gtk', 'wx' or 'inline'), otherwise we use the default chosen by
-          matplotlib (as dictated by the matplotlib build-time options plus the
-          user's matplotlibrc configuration file).  Note that not all backends
-          make sense in all contexts, for example a terminal ipython can't
-          display figures inline.
+            If given, dictates the choice of matplotlib GUI backend to use
+            (should be one of IPython's supported backends, 'qt', 'osx', 'tk',
+            'gtk', 'wx' or 'inline'), otherwise we use the default chosen by
+            matplotlib (as dictated by the matplotlib build-time options plus the
+            user's matplotlibrc configuration file).  Note that not all backends
+            make sense in all contexts, for example a terminal ipython can't
+            display figures inline.
         import_all : optional, bool, default: True
-          Whether to do `from numpy import *` and `from pylab import *`
-          in addition to module imports.
+            Whether to do `from numpy import *` and `from pylab import *`
+            in addition to module imports.
         welcome_message : deprecated
-          This argument is ignored, no welcome message will be displayed.
+            This argument is ignored, no welcome message will be displayed.
         """
         from IPython.core.pylabtools import import_pylab
-        
+
         gui, backend = self.enable_matplotlib(gui)
-        
+
         # We want to prevent the loading of pylab to pollute the user's
         # namespace as shown by the %who* magics, so we execute the activation
         # code in an empty namespace, and we update *both* user_ns and
@@ -2926,7 +3718,7 @@ class InteractiveShell(SingletonConfigurable):
         ns = {}
         import_pylab(ns, import_all)
         # warn about clobbered names
-        ignored = set(["__builtins__"])
+        ignored = {"__builtins__"}
         both = set(ns).intersection(self.user_ns).difference(ignored)
         clobbered = [ name for name in both if self.user_ns[name] is not ns[name] ]
         self.user_ns.update(ns)
@@ -2947,7 +3739,15 @@ class InteractiveShell(SingletonConfigurable):
         namespace.
         """
         ns = self.user_ns.copy()
-        ns.update(sys._getframe(depth+1).f_locals)
+        try:
+            frame = sys._getframe(depth+1)
+        except ValueError:
+            # This is thrown if there aren't that many frames on the stack,
+            # e.g. if a script called run_line_magic() directly.
+            pass
+        else:
+            ns.update(frame.f_locals)
+
         try:
             # We have to use .vformat() here, because 'self' is a valid and common
             # name, and expanding **ns for .format() would make it collide with
@@ -2961,37 +3761,32 @@ class InteractiveShell(SingletonConfigurable):
     def mktempfile(self, data=None, prefix='ipython_edit_'):
         """Make a new tempfile and return its filename.
 
-        This makes a call to tempfile.mktemp, but it registers the created
-        filename internally so ipython cleans it up at exit time.
+        This makes a call to tempfile.mkstemp (created in a tempfile.mkdtemp),
+        but it registers the created filename internally so ipython cleans it up
+        at exit time.
 
         Optional inputs:
 
           - data(None): if data is given, it gets written out to the temp file
-          immediately, and the file is closed again."""
+            immediately, and the file is closed again."""
 
-        filename = tempfile.mktemp('.py', prefix)
-        self.tempfiles.append(filename)
+        dir_path = Path(tempfile.mkdtemp(prefix=prefix))
+        self.tempdirs.append(dir_path)
+
+        handle, filename = tempfile.mkstemp(".py", prefix, dir=str(dir_path))
+        os.close(handle)  # On Windows, there can only be one open handle on a file
+
+        file_path = Path(filename)
+        self.tempfiles.append(file_path)
 
         if data:
-            tmp_file = open(filename,'w')
-            tmp_file.write(data)
-            tmp_file.close()
+            file_path.write_text(data, encoding="utf-8")
         return filename
 
-    # TODO:  This should be removed when Term is refactored.
-    def write(self,data):
-        """Write a string to the default output"""
-        io.stdout.write(data)
-
-    # TODO:  This should be removed when Term is refactored.
-    def write_err(self,data):
-        """Write a string to the default error output"""
-        io.stderr.write(data)
-
-    def ask_yes_no(self, prompt, default=None):
+    def ask_yes_no(self, prompt, default=None, interrupt=None):
         if self.quiet:
             return True
-        return ask_yes_no(prompt,default)
+        return ask_yes_no(prompt,default,interrupt)
 
     def show_usage(self):
         """Show a usage message"""
@@ -3002,51 +3797,65 @@ class InteractiveShell(SingletonConfigurable):
 
         Parameters
         ----------
-        range_str : string
+        range_str : str
             The set of slices is given as a string, like "~5/6-~4/2 4:8 9",
             since this function is for use by magic functions which get their
             arguments as strings. The number before the / is the session
             number: ~n goes n back from the current session.
 
-        Optional Parameters:
-          - raw(False): by default, the processed input is used.  If this is
-          true, the raw input history is used instead.
+            If empty string is given, returns history of current session
+            without the last input.
 
-        Note that slices can be called with two notations:
+        raw : bool, optional
+            By default, the processed input is used.  If this is true, the raw
+            input history is used instead.
 
-        N:M -> standard python form, means including items N...(M-1).
+        Notes
+        -----
+        Slices can be described with two notations:
 
-        N-M -> include items N..M (closed endpoint)."""
+        * ``N:M`` -> standard python form, means including items N...(M-1).
+        * ``N-M`` -> include items N..M (closed endpoint).
+        """
         lines = self.history_manager.get_range_by_str(range_str, raw=raw)
-        return "\n".join(x for _, _, x in lines)
+        text = "\n".join(x for _, _, x in lines)
 
-    def find_user_code(self, target, raw=True, py_only=False, skip_encoding_cookie=True):
+        # Skip the last line, as it's probably the magic that called this
+        if not range_str:
+            if "\n" not in text:
+                text = ""
+            else:
+                text = text[: text.rfind("\n")]
+
+        return text
+
+    def find_user_code(self, target, raw=True, py_only=False, skip_encoding_cookie=True, search_ns=False):
         """Get a code string from history, file, url, or a string or macro.
 
         This is mainly used by magic functions.
 
         Parameters
         ----------
-
         target : str
+            A string specifying code to retrieve. This will be tried respectively
+            as: ranges of input history (see %history for syntax), url,
+            corresponding .py file, filename, or an expression evaluating to a
+            string or Macro in the user namespace.
 
-          A string specifying code to retrieve. This will be tried respectively
-          as: ranges of input history (see %history for syntax), url,
-          correspnding .py file, filename, or an expression evaluating to a
-          string or Macro in the user namespace.
+            If empty string is given, returns complete history of current
+            session, without the last line.
 
         raw : bool
-          If true (default), retrieve raw history. Has no effect on the other
-          retrieval mechanisms.
+            If true (default), retrieve raw history. Has no effect on the other
+            retrieval mechanisms.
 
         py_only : bool (default False)
-          Only try to fetch python code, do not try alternative methods to decode file
-          if unicode fails.
+            Only try to fetch python code, do not try alternative methods to decode file
+            if unicode fails.
 
         Returns
         -------
         A string of code.
-
         ValueError is raised if nothing is found, and TypeError if it evaluates
         to an object of another type. In each case, .args[0] is a printable
         message.
@@ -3054,16 +3863,16 @@ class InteractiveShell(SingletonConfigurable):
         code = self.extract_input_lines(target, raw=raw)  # Grab history
         if code:
             return code
-        utarget = unquote_filename(target)
         try:
-            if utarget.startswith(('http://', 'https://')):
-                return openpy.read_py_url(utarget, skip_encoding_cookie=skip_encoding_cookie)
-        except UnicodeDecodeError:
+            if target.startswith(('http://', 'https://')):
+                return openpy.read_py_url(target, skip_encoding_cookie=skip_encoding_cookie)
+        except UnicodeDecodeError as e:
             if not py_only :
-                from urllib import urlopen  # Deferred import
+                # Deferred import
+                from urllib.request import urlopen
                 response = urlopen(target)
                 return response.read().decode('latin1')
-            raise ValueError(("'%s' seem to be unreadable.") % utarget)
+            raise ValueError(("'%s' seem to be unreadable.") % target) from e
 
         potential_target = [target]
         try :
@@ -3075,26 +3884,49 @@ class InteractiveShell(SingletonConfigurable):
             if os.path.isfile(tgt):                        # Read file
                 try :
                     return openpy.read_py_file(tgt, skip_encoding_cookie=skip_encoding_cookie)
-                except UnicodeDecodeError :
+                except UnicodeDecodeError as e:
                     if not py_only :
                         with io_open(tgt,'r', encoding='latin1') as f :
                             return f.read()
-                    raise ValueError(("'%s' seem to be unreadable.") % target)
+                    raise ValueError(("'%s' seem to be unreadable.") % target) from e
             elif os.path.isdir(os.path.expanduser(tgt)):
                 raise ValueError("'%s' is a directory, not a regular file." % target)
 
+        if search_ns:
+            # Inspect namespace to load object source
+            object_info = self.object_inspect(target, detail_level=1)
+            if object_info['found'] and object_info['source']:
+                return object_info['source']
+
         try:                                              # User namespace
             codeobj = eval(target, self.user_ns)
-        except Exception:
+        except Exception as e:
             raise ValueError(("'%s' was not found in history, as a file, url, "
-                                "nor in the user namespace.") % target)
-        if isinstance(codeobj, basestring):
+                                "nor in the user namespace.") % target) from e
+
+        if isinstance(codeobj, str):
             return codeobj
         elif isinstance(codeobj, Macro):
             return codeobj.value
 
         raise TypeError("%s is neither a string nor a macro." % target,
                         codeobj)
+
+    def _atexit_once(self):
+        """
+        At exist operation that need to be called at most once.
+        Second call to this function per instance will do nothing.
+        """
+
+        if not getattr(self, "_atexit_once_called", False):
+            self._atexit_once_called = True
+            # Clear all user namespaces to release all references cleanly.
+            self.reset(new_session=False)
+            # Close the history session (this stores the end time and line count)
+            # this must be *before* the tempfile cleanup, in case of temporary
+            # history db
+            self.history_manager.end_session()
+            self.history_manager = None
 
     #-------------------------------------------------------------------------
     # Things related to IPython exiting
@@ -3110,30 +3942,39 @@ class InteractiveShell(SingletonConfigurable):
         code that has the appropriate information, rather than trying to
         clutter
         """
-        # Close the history session (this stores the end time and line count)
-        # this must be *before* the tempfile cleanup, in case of temporary
-        # history db
-        self.history_manager.end_session()
+        self._atexit_once()
 
-        # Cleanup all tempfiles left around
+        # Cleanup all tempfiles and folders left around
         for tfile in self.tempfiles:
             try:
-                os.unlink(tfile)
-            except OSError:
+                tfile.unlink()
+                self.tempfiles.remove(tfile)
+            except FileNotFoundError:
                 pass
+        del self.tempfiles
+        for tdir in self.tempdirs:
+            try:
+                shutil.rmtree(tdir)
+                self.tempdirs.remove(tdir)
+            except FileNotFoundError:
+                pass
+        del self.tempdirs
 
-        # Clear all user namespaces to release all references cleanly.
-        self.reset(new_session=False)
-
-        # Run user hooks
-        self.hooks.shutdown_hook()
+        # Restore user's cursor
+        if hasattr(self, "editing_mode") and self.editing_mode == "vi":
+            sys.stdout.write("\x1b[0 q")
+            sys.stdout.flush()
 
     def cleanup(self):
         self.restore_sys_module_state()
 
 
-class InteractiveShellABC(object):
+    # Overridden in terminal subclass to change prompts
+    def switch_doctest_mode(self, mode):
+        pass
+
+
+class InteractiveShellABC(metaclass=abc.ABCMeta):
     """An abstract base class for InteractiveShell."""
-    __metaclass__ = abc.ABCMeta
 
 InteractiveShellABC.register(InteractiveShell)

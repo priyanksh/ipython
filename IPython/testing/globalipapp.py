@@ -5,83 +5,21 @@ modifications IPython makes to system behavior don't send the doctest machinery
 into a fit.  This code should be considered a gross hack, but it gets the job
 done.
 """
-from __future__ import absolute_import
-from __future__ import print_function
 
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2009-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
-
-# stdlib
-import __builtin__ as builtin_mod
-import os
+import builtins as builtin_mod
 import sys
+import types
 
-# our own
+from pathlib import Path
+
 from . import tools
 
 from IPython.core import page
 from IPython.utils import io
-from IPython.utils import py3compat
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
-
-#-----------------------------------------------------------------------------
-# Functions
-#-----------------------------------------------------------------------------
-
-class StreamProxy(io.IOStream):
-    """Proxy for sys.stdout/err.  This will request the stream *at call time*
-    allowing for nose's Capture plugin's redirection of sys.stdout/err.
-
-    Parameters
-    ----------
-    name : str
-        The name of the stream. This will be requested anew at every call
-    """
-
-    def __init__(self, name):
-        self.name=name
-
-    @property
-    def stream(self):
-        return getattr(sys, self.name)
-
-    def flush(self):
-        self.stream.flush()
-
-# Hack to modify the %run command so we can sync the user's namespace with the
-# test globals.  Once we move over to a clean magic system, this will be done
-# with much less ugliness.
-
-class py_file_finder(object):
-    def __init__(self,test_filename):
-        self.test_filename = test_filename
-
-    def __call__(self,name,win32=False):
-        from IPython.utils.path import get_py_filename
-        try:
-            return get_py_filename(name,win32=win32)
-        except IOError:
-            test_dir = os.path.dirname(self.test_filename)
-            new_path = os.path.join(test_dir,name)
-            return get_py_filename(new_path,win32=win32)
-
-
-def _run_ns_sync(self,arg_s,runner=None):
-    """Modified version of %run that syncs testing namespaces.
-
-    This is strictly needed for running doctests that call %run.
-    """
-    #print('in run_ns_sync', arg_s, file=sys.stderr)  # dbg
-    finder = py_file_finder(arg_s)
-    return get_ipython().magic_run_ori(arg_s, runner, finder)
 
 
 def get_ipython():
@@ -125,6 +63,7 @@ def start_ipython():
 
     # Create custom argv and namespaces for our IPython to be test-friendly
     config = tools.default_config()
+    config.TerminalInteractiveShell.simple_prompt = True
 
     # Create and initialize our test-friendly IPython instance.
     shell = TerminalInteractiveShell.instance(config=config,
@@ -133,7 +72,7 @@ def start_ipython():
     # A few more tweaks needed for playing nicely with doctests...
 
     # remove history file
-    shell.tempfiles.append(config.HistoryManager.hist_file)
+    shell.tempfiles.append(Path(config.HistoryManager.hist_file))
 
     # These traps are normally only active for interactive use, set them
     # permanently since we'll be mocking interactive sessions.
@@ -142,9 +81,9 @@ def start_ipython():
     # Modify the IPython system call with one that uses getoutput, so that we
     # can capture subcommands and print them to Python's stdout, otherwise the
     # doctest machinery would miss them.
-    shell.system = py3compat.MethodType(xsys, shell)
-    
-    shell._showtraceback = py3compat.MethodType(_showtraceback, shell)
+    shell.system = types.MethodType(xsys, shell)
+
+    shell._showtraceback = types.MethodType(_showtraceback, shell)
 
     # IPython is ready, now clean up some global state...
 
@@ -160,17 +99,16 @@ def start_ipython():
     _ip = shell
     get_ipython = _ip.get_ipython
     builtin_mod._ip = _ip
+    builtin_mod.ip = _ip
     builtin_mod.get_ipython = get_ipython
 
-    # To avoid extra IPython messages during testing, suppress io.stdout/stderr
-    io.stdout = StreamProxy('stdout')
-    io.stderr = StreamProxy('stderr')
-    
     # Override paging, so we don't require user interaction during the tests.
     def nopage(strng, start=0, screen_lines=0, pager_cmd=None):
+        if isinstance(strng, dict):
+           strng = strng.get('text/plain', '')
         print(strng)
     
-    page.orig_page = page.page
-    page.page = nopage
+    page.orig_page = page.pager_page
+    page.pager_page = nopage
 
     return _ip

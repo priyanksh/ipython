@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-A module to change reload() so that it acts recursively.
-To enable it type::
+Provides a reload() function that acts recursively.
 
-    import __builtin__, deepreload
-    __builtin__.reload = deepreload.reload
+Python's normal :func:`python:reload` function only reloads the module that it's
+passed. The :func:`reload` function in this module also reloads everything
+imported from that module, which is useful when you're changing files deep
+inside a package.
 
-You can then disable it with::
+To use this as your default reload function, type this::
 
-    __builtin__.reload = deepreload.original_reload
+    import builtins
+    from IPython.lib import deepreload
+    builtins.reload = deepreload.reload
 
-Alternatively, you can add a dreload builtin alongside normal reload with::
-
-    __builtin__.dreload = deepreload.reload
+A reference to the original :func:`python:reload` is stored in this module as
+:data:`original_reload`, so you can restore it later.
 
 This code is almost entirely based on knee.py, which is a Python
 re-implementation of hierarchical module import.
@@ -24,24 +26,25 @@ re-implementation of hierarchical module import.
 #  the file COPYING, distributed as part of this software.
 #*****************************************************************************
 
-import __builtin__
+import builtins as builtin_mod
 from contextlib import contextmanager
-import imp
+import importlib
 import sys
 
 from types import ModuleType
 from warnings import warn
+import types
 
-original_import = __builtin__.__import__
+original_import = builtin_mod.__import__
 
 @contextmanager
 def replace_import_hook(new_import):
-    saved_import = __builtin__.__import__
-    __builtin__.__import__ = new_import
+    saved_import = builtin_mod.__import__
+    builtin_mod.__import__ = new_import
     try:
         yield
     finally:
-        __builtin__.__import__ = saved_import
+        builtin_mod.__import__ = saved_import
 
 def get_parent(globals, level):
     """
@@ -83,7 +86,7 @@ def get_parent(globals, level):
         else:
             # Normal module, so work out the package name if any
             lastdot = modname.rfind('.')
-            if lastdot < 0 and level > 0:
+            if lastdot < 0 < level:
                 raise ValueError("Attempted relative import in non-package")
             if lastdot < 0:
                 globals['__package__'] = None
@@ -91,24 +94,24 @@ def get_parent(globals, level):
             globals['__package__'] = name = modname[:lastdot]
 
     dot = len(name)
-    for x in xrange(level, 1, -1):
+    for x in range(level, 1, -1):
         try:
             dot = name.rindex('.', 0, dot)
-        except ValueError:
+        except ValueError as e:
             raise ValueError("attempted relative import beyond top-level "
-                             "package")
+                             "package") from e
     name = name[:dot]
 
     try:
         parent = sys.modules[name]
-    except:
+    except BaseException as e:
         if orig_level < 1:
             warn("Parent module '%.200s' not found while handling absolute "
                  "import" % name)
             parent = None
         else:
             raise SystemError("Parent module '%.200s' not loaded, cannot "
-                              "perform relative import" % name)
+                              "perform relative import" % name) from e
 
     # We expect, but can't guarantee, if parent != None, that:
     # - parent.__name__ == name
@@ -154,6 +157,7 @@ def load_next(mod, altmod, name, buf):
 
     return result, next, buf
 
+
 # Need to keep track of what we've already reloaded to prevent cyclic evil
 found_now = {}
 
@@ -167,36 +171,20 @@ def import_submodule(mod, subname, fullname):
     if fullname in found_now and fullname in sys.modules:
         m = sys.modules[fullname]
     else:
-        print 'Reloading', fullname
+        print('Reloading', fullname)
         found_now[fullname] = 1
         oldm = sys.modules.get(fullname, None)
-
-        if mod is None:
-            path = None
-        elif hasattr(mod, '__path__'):
-            path = mod.__path__
-        else:
-            return None
-
         try:
-            # This appears to be necessary on Python 3, because imp.find_module()
-            # tries to import standard libraries (like io) itself, and we don't
-            # want them to be processed by our deep_import_hook.
-            with replace_import_hook(original_import):
-                fp, filename, stuff = imp.find_module(subname, path)
-        except ImportError:
-            return None
-
-        try:
-            m = imp.load_module(fullname, fp, filename, stuff)
+            if oldm is not None:
+                m = importlib.reload(oldm)
+            else:
+                m = importlib.import_module(subname, mod)
         except:
             # load_module probably removed name from modules because of
             # the error.  Put back the original module object.
             if oldm:
                 sys.modules[fullname] = oldm
             raise
-        finally:
-            if fp: fp.close()
 
         add_submodule(mod, m, fullname, subname)
 
@@ -261,6 +249,12 @@ modules_reloading = {}
 
 def deep_reload_hook(m):
     """Replacement for reload()."""
+    # Hardcode this one  as it would raise a NotImplementedError from the
+    # bowels of Python and screw up the import machinery after.
+    # unlike other imports the `exclude` list already in place is not enough.
+
+    if m is types:
+        return m
     if not isinstance(m, ModuleType):
         raise TypeError("reload() argument must be module")
 
@@ -275,52 +269,35 @@ def deep_reload_hook(m):
     except:
         modules_reloading[name] = m
 
-    dot = name.rfind('.')
-    if dot < 0:
-        subname = name
-        path = None
-    else:
-        try:
-            parent = sys.modules[name[:dot]]
-        except KeyError:
-            modules_reloading.clear()
-            raise ImportError("reload(): parent %.200s not in sys.modules" % name[:dot])
-        subname = name[dot+1:]
-        path = getattr(parent, "__path__", None)
-
     try:
-        # This appears to be necessary on Python 3, because imp.find_module()
-        # tries to import standard libraries (like io) itself, and we don't
-        # want them to be processed by our deep_import_hook.
-        with replace_import_hook(original_import):
-            fp, filename, stuff  = imp.find_module(subname, path)
-    finally:
-        modules_reloading.clear()
-
-    try:
-        newm = imp.load_module(name, fp, filename, stuff)
+        newm = importlib.reload(m)
     except:
-         # load_module probably removed name from modules because of
-         # the error.  Put back the original module object.
         sys.modules[name] = m
         raise
     finally:
-        if fp: fp.close()
-
-    modules_reloading.clear()
+        modules_reloading.clear()
     return newm
 
 # Save the original hooks
-try:
-    original_reload = __builtin__.reload
-except AttributeError:
-    original_reload = imp.reload    # Python 3
+original_reload = importlib.reload
 
 # Replacement for reload()
-def reload(module, exclude=['sys', 'os.path', '__builtin__', '__main__']):
+def reload(
+    module,
+    exclude=(
+        *sys.builtin_module_names,
+        "sys",
+        "os.path",
+        "builtins",
+        "__main__",
+        "numpy",
+        "numpy._globals",
+    ),
+):
     """Recursively reload all modules used in the given module.  Optionally
     takes a list of modules to exclude from reloading.  The default exclude
-    list contains sys, __main__, and __builtin__, to prevent, e.g., resetting
+    list contains modules listed in sys.builtin_module_names with additional
+    sys, os.path, builtins and __main__, to prevent, e.g., resetting
     display, exception, and io hooks.
     """
     global found_now
@@ -328,11 +305,6 @@ def reload(module, exclude=['sys', 'os.path', '__builtin__', '__main__']):
         found_now[i] = 1
     try:
         with replace_import_hook(deep_import_hook):
-            ret = deep_reload_hook(module)
+            return deep_reload_hook(module)
     finally:
         found_now = {}
-    return ret
-
-# Uncomment the following to automatically activate deep reloading whenever
-# this module is imported
-#__builtin__.reload = reload

@@ -15,10 +15,13 @@
 # Python standard modules
 import glob
 import io
+import logging
 import os
 import time
 
-from IPython.utils.py3compat import str_to_unicode
+
+# prevent jedi/parso's debug messages pipe into interactiveshell
+logging.getLogger("parso").setLevel(logging.WARNING)
 
 #****************************************************************************
 # FIXME: This class isn't a mixin anymore, but it still needs attributes from
@@ -137,33 +140,33 @@ class Logger(object):
         label = {0:'OFF',1:'ON',False:'OFF',True:'ON'}
 
         if self.logfile is None:
-            print """
+            print("""
 Logging hasn't been started yet (use logstart for that).
 
 %logon/%logoff are for temporarily starting and stopping logging for a logfile
 which already exists. But you must first start the logging process with
-%logstart (optionally giving a logfile name)."""
+%logstart (optionally giving a logfile name).""")
 
         else:
             if self.log_active == val:
-                print 'Logging is already',label[val]
+                print('Logging is already',label[val])
             else:
-                print 'Switching logging',label[val]
+                print('Switching logging',label[val])
                 self.log_active = not self.log_active
                 self.log_active_out = self.log_active
 
     def logstate(self):
         """Print a status message about the logger."""
         if self.logfile is None:
-            print 'Logging has not been activated.'
+            print('Logging has not been activated.')
         else:
             state = self.log_active and 'active' or 'temporarily suspended'
-            print 'Filename       :',self.logfname
-            print 'Mode           :',self.logmode
-            print 'Output logging :',self.log_output
-            print 'Raw input log  :',self.log_raw_input
-            print 'Timestamping   :',self.timestamp
-            print 'State          :',state
+            print('Filename       :', self.logfname)
+            print('Mode           :', self.logmode)
+            print('Output logging :', self.log_output)
+            print('Raw input log  :', self.log_raw_input)
+            print('Timestamping   :', self.timestamp)
+            print('State          :', state)
 
     def log(self, line_mod, line_ori):
         """Write the sources to a log.
@@ -171,11 +174,11 @@ which already exists. But you must first start the logging process with
         Inputs:
 
         - line_mod: possibly modified input, such as the transformations made
-        by input prefilters or input handlers of various kinds.  This should
-        always be valid Python.
+          by input prefilters or input handlers of various kinds. This should
+          always be valid Python.
 
-        - line_ori: unmodified input line from the user.  This is not
-        necessarily valid Python.
+        - line_ori: unmodified input line from the user. This is not
+          necessarily valid Python.
         """
 
         # Write the log line, but decide which one according to the
@@ -193,14 +196,22 @@ which already exists. But you must first start the logging process with
             write = self.logfile.write
             if kind=='input':
                 if self.timestamp:
-                    write(str_to_unicode(time.strftime('# %a, %d %b %Y %H:%M:%S\n',
-                                        time.localtime())))
+                    write(time.strftime('# %a, %d %b %Y %H:%M:%S\n', time.localtime()))
                 write(data)
             elif kind=='output' and self.log_output:
                 odata = u'\n'.join([u'#[Out]# %s' % s
                                    for s in data.splitlines()])
                 write(u'%s\n' % odata)
-            self.logfile.flush()
+            try:
+                self.logfile.flush()
+            except OSError:
+                print("Failed to flush the log file.")
+                print(
+                    f"Please check that {self.logfname} exists and have the right permissions."
+                )
+                print(
+                    "Also consider turning off the log with `%logstop` to avoid this warning."
+                )
 
     def logstop(self):
         """Fully stop logging and close log file.
@@ -213,7 +224,7 @@ which already exists. But you must first start the logging process with
             self.logfile.close()
             self.logfile = None
         else:
-            print "Logging hadn't been started."
+            print("Logging hadn't been started.")
         self.log_active = False
 
     # For backwards compatibility, in case anyone was using this.

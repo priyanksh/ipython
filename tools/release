@@ -1,26 +1,35 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """IPython release script.
 
 This should ONLY be run at real release time.
 """
 from __future__ import print_function
 
-from toollib import *
-from gh_api import post_download
+import os
+from glob import glob
+from pathlib import Path
+from subprocess import call
+import sys
+
+from toollib import (get_ipdir, cd, execfile, sh, archive,
+         archive_user, archive_dir)
 
 # Get main ipython dir, this will raise if it doesn't pass some checks
 ipdir = get_ipdir()
-tooldir = pjoin(ipdir, 'tools')
-distdir = pjoin(ipdir, 'dist')
+tooldir = ipdir / 'tools'
+distdir = ipdir / 'dist'
 
 # Where I keep static backups of each release
-ipbackupdir = os.path.expanduser('~/ipython/backup')
+ipbackupdir = Path('~/ipython/backup').expanduser()
+if not ipbackupdir.exists():
+    ipbackupdir.mkdir(parents=True, exist_ok=True)
 
 # Start in main IPython dir
 cd(ipdir)
 
 # Load release info
-execfile(pjoin('IPython','core','release.py'))
+version = None
+execfile(Path('IPython','core','release.py'), globals())
 
 # Build site addresses for file uploads
 release_site = '%s/release/%s' % (archive, version)
@@ -38,33 +47,40 @@ print()
 
 # Perform local backup, go to tools dir to run it.
 cd(tooldir)
-sh('./make_tarball.py')
-sh('mv ipython-*.tgz %s' % ipbackupdir)
 
-# Build release files
-sh('./build_release %s' % ipdir)
+if 'upload' in sys.argv:
+    cd(distdir)
 
-# Register with the Python Package Index (PyPI)
-print( 'Registering with PyPI...')
-cd(ipdir)
-sh('./setup.py register')
+    # do not upload OS specific files like .DS_Store
+    to_upload = glob('*.whl')+glob('*.tar.gz')
 
-# Upload all files
-sh(sdists + ' upload')
-cd(distdir)
-print( 'Uploading distribution files...')
+    # Make target dir if it doesn't exist
+    print('1. Uploading IPython to archive.ipython.org')
+    sh('ssh %s "mkdir -p %s/release/%s" ' % (archive_user, archive_dir, version))
+    sh('scp *.tar.gz *.whl %s' % release_site)
 
-for fname in os.listdir('.'):
-    print('uploading %s to GitHub' % fname)
-    desc = "IPython %s source distribution" % version
-    post_download("ipython/ipython", fname, description=desc)
+    print('2. Uploading backup files...')
+    cd(ipbackupdir)
+    sh('scp `ls -1tr *tgz | tail -1` %s' % backup_site)
 
-# Make target dir if it doesn't exist
-sh('ssh %s "mkdir -p %s/release/%s" ' % (archive_user, archive_dir, version))
-sh('scp * %s' % release_site)
+    print('3. Uploading to PyPI using twine')
+    cd(distdir)
+    call(['twine', 'upload', '--verbose'] + to_upload)
 
-print( 'Uploading backup files...')
-cd(ipbackupdir)
-sh('scp `ls -1tr *tgz | tail -1` %s' % backup_site)
+else:
+    # Build, but don't upload
 
-print('Done!')
+    # Make backup tarball
+    sh('python make_tarball.py')
+    sh('mv ipython-*.tgz %s' % ipbackupdir)
+
+    # Build release files
+    sh('./build_release')
+
+    cd(ipdir)
+
+    print("`./release upload` to upload source distribution on PyPI and ipython archive")
+    sys.exit(0)
+
+
+

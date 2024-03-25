@@ -155,7 +155,7 @@ Other improvements to the Notebook
 These are some other notable small improvements to the notebook, in addition to
 many bug fixes and minor changes to add polish and robustness throughout:
 
-* The notebook pager (the area at the bottom) is now resizeable by dragging its
+* The notebook pager (the area at the bottom) is now Resizable by dragging its
   divider handle, a feature that had been requested many times by just about
   anyone who had used the notebook system.  :ghpull:`1705`.
 
@@ -283,7 +283,7 @@ that provide specialized magics.  These typically require additional software
 to run and must be manually loaded via ``%load_ext <extension name>``, but are
 extremely useful.  The following extensions are provided:
 
-**Cython magics** (extension :ref:`cythonmagic <extensions_cythonmagic>`)
+**Cython magics** (extension ``cythonmagic``)
     This extension provides magics to automatically build and compile Python
     extension modules using the Cython_ language. You must install Cython
     separately, as well as a C compiler, for this to work.  The examples
@@ -298,7 +298,7 @@ extremely useful.  The following extensions are provided:
 
 .. _cython: http://cython.org
 
-**Octave magics** (extension :ref:`octavemagic <extensions_octavemagic>`)
+**Octave magics** (extension ``octavemagic``)
     This extension provides several magics that support calling code written in
     the Octave_ language for numerical computing.  You can execute single-lines
     or whole blocks of Octave code, capture both output and figures inline
@@ -317,7 +317,7 @@ extremely useful.  The following extensions are provided:
 .. _octave: http://www.gnu.org/software/octave
 .. _oct2py: http://pypi.python.org/pypi/oct2py
 
-**R magics** (extension :ref:`rmagic <extensions_rmagic>`)
+**R magics** (extension ``rmagic``)
     This extension provides several magics that support calling code written in
     the R_ language for statistical data analysis.  You can execute
     single-lines or whole blocks of R code, capture both output and figures
@@ -425,7 +425,7 @@ of the internal execution parts:
 The parallel tools now default to using ``NoDB`` as the storage backend for
 intermediate results.  This means that the default usage case will have a
 significantly reduced memory footprint, though certain advanced features are
-not available with this backend.  For more details, see :ref:`parallel_db`.
+not available with this backend.
 
 The parallel magics now display all output, so you can do parallel plotting or
 other actions with complex display.  The ``px`` magic has now both line and cell
@@ -517,7 +517,7 @@ Official Public API
 We have begun organizing our API for easier public use, with an eye towards an
 official IPython 1.0 release which will firmly maintain this API compatible for
 its entire lifecycle.  There is now an :mod:`IPython.display` module that
-aggregates all display routines, and the :mod:`IPython.config` namespace has
+aggregates all display routines, and the :mod:`traitlets.config` namespace has
 all public configuration tools.  We will continue improving our public API
 layout so that users only need to import names one level deeper than the main
 ``IPython`` package to access all public namespaces.
@@ -530,10 +530,7 @@ The directory ``docs/resources`` in the source distribution contains SVG and
 PNG versions of our file icons, as well as an ``Info.plist.example`` file with
 instructions to install them on Mac OSX.  This is a first draft of our icons,
 and we encourage contributions from users with graphic talent to improve them
-in the future:
-
-.. image:: ../../resources/ipynb_icon_128x128.png
-   :alt:  IPython notebook file icon.
+in the future.
 
 	  
 New top-level `locate` command

@@ -17,19 +17,16 @@ NOTE: this is a modified version of a script originally shipped with the
 PyMVPA project, which we've adapted for NIPY use.  PyMVPA is an MIT-licensed
 project."""
 
-from __future__ import print_function
 
 # Stdlib imports
 import ast
+import inspect
 import os
 import re
+from importlib import import_module
+from types import SimpleNamespace as Obj
 
-class Obj(object):
-    '''Namespace to hold arbitrary information.'''
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-                                        
+
 class FuncClsScanner(ast.NodeVisitor):
     """Scan a module for top-level functions and classes.
     
@@ -40,11 +37,19 @@ class FuncClsScanner(ast.NodeVisitor):
         self.classes = []
         self.classes_seen = set()
         self.functions = []
-    
+
     @staticmethod
     def has_undoc_decorator(node):
         return any(isinstance(d, ast.Name) and d.id == 'undoc' \
                                 for d in node.decorator_list)
+
+    def visit_If(self, node):
+        if isinstance(node.test, ast.Compare) \
+                and isinstance(node.test.left, ast.Name) \
+                and node.test.left.id == '__name__':
+            return   # Ignore classes defined in "if __name__ == '__main__':"
+
+        self.generic_visit(node)
     
     def visit_FunctionDef(self, node):
         if not (node.name.startswith('_') or self.has_undoc_decorator(node)) \
@@ -52,11 +57,15 @@ class FuncClsScanner(ast.NodeVisitor):
             self.functions.append(node.name)
     
     def visit_ClassDef(self, node):
-        if not (node.name.startswith('_') or self.has_undoc_decorator(node)) \
-                and node.name not in self.classes_seen:
-            cls = Obj(name=node.name)
-            cls.has_init = any(isinstance(n, ast.FunctionDef) and \
-                                n.name=='__init__' for n in node.body)
+        if (
+            not (node.name.startswith("_") or self.has_undoc_decorator(node))
+            and node.name not in self.classes_seen
+        ):
+            cls = Obj(name=node.name, sphinx_options={})
+            cls.has_init = any(
+                isinstance(n, ast.FunctionDef) and n.name == "__init__"
+                for n in node.body
+            )
             self.classes.append(cls)
             self.classes_seen.add(node.name)
     
@@ -77,6 +86,7 @@ class ApiDocWriter(object):
                  rst_extension='.rst',
                  package_skip_patterns=None,
                  module_skip_patterns=None,
+                 names_from__all__=None,
                  ):
         ''' Initialize package for parsing
 
@@ -94,7 +104,7 @@ class ApiDocWriter(object):
             if *package_name* is ``sphinx``, then ``sphinx.util`` will
             result in ``.util`` being passed for earching by these
             regexps.  If is None, gives default. Default is:
-            ['\.tests$']
+            ['\\.tests$']
         module_skip_patterns : None or sequence
             Sequence of strings giving URIs of modules to be excluded
             Operates on the module name including preceding URI path,
@@ -102,7 +112,13 @@ class ApiDocWriter(object):
             ``sphinx.util.console`` results in the string to search of
             ``.util.console``
             If is None, gives default. Default is:
-            ['\.setup$', '\._']
+            ['\\.setup$', '\\._']
+        names_from__all__ : set, optional
+            Modules listed in here will be scanned by doing ``from mod import *``,
+            rather than finding function and class definitions by scanning the
+            AST. This is intended for API modules which expose things defined in
+            other files. Modules listed here must define ``__all__`` to avoid
+            exposing everything they import.
         '''
         if package_skip_patterns is None:
             package_skip_patterns = ['\\.tests$']
@@ -112,6 +128,7 @@ class ApiDocWriter(object):
         self.rst_extension = rst_extension
         self.package_skip_patterns = package_skip_patterns
         self.module_skip_patterns = module_skip_patterns
+        self.names_from__all__ = names_from__all__ or set()
 
     def get_package_name(self):
         return self._package_name
@@ -130,7 +147,7 @@ class ApiDocWriter(object):
         '''
         # It's also possible to imagine caching the module parsing here
         self._package_name = package_name
-        self.root_module = __import__(package_name)
+        self.root_module = import_module(package_name)
         self.root_path = self.root_module.__path__[0]
         self.written_modules = None
 
@@ -196,6 +213,33 @@ class ApiDocWriter(object):
             mod = ast.parse(f.read())
         return FuncClsScanner().scan(mod)
 
+    def _import_funcs_classes(self, uri):
+        """Import * from uri, and separate out functions and classes."""
+        ns = {}
+        exec('from %s import *' % uri, ns)
+        funcs, classes = [], []
+        for name, obj in ns.items():
+            if inspect.isclass(obj):
+                cls = Obj(
+                    name=name,
+                    has_init="__init__" in obj.__dict__,
+                    sphinx_options=getattr(obj, "_sphinx_options", {}),
+                )
+                classes.append(cls)
+            elif inspect.isfunction(obj):
+                funcs.append(name)
+
+        return sorted(funcs), sorted(classes, key=lambda x: x.name)
+
+    def find_funcs_classes(self, uri):
+        """Find the functions and classes defined in the module ``uri``"""
+        if uri in self.names_from__all__:
+            # For API modules which expose things defined elsewhere, import them
+            return self._import_funcs_classes(uri)
+        else:
+            # For other modules, scan their AST to see what they define
+            return self._parse_module(uri)
+
     def generate_api_doc(self, uri):
         '''Make autodoc documentation template string for a module
 
@@ -210,9 +254,9 @@ class ApiDocWriter(object):
             Contents of API doc
         '''
         # get the names of all classes and functions
-        functions, classes = self._parse_module(uri)
+        functions, classes = self.find_funcs_classes(uri)
         if not len(functions) and not len(classes):
-            print ('WARNING: Empty -', uri)  # dbg
+            #print ('WARNING: Empty -', uri)  # dbg
             return ''
 
         # Make a shorter version of the uri that omits the package name for
@@ -238,10 +282,18 @@ class ApiDocWriter(object):
                   self.rst_section_levels[2] * len(subhead) + '\n'
 
         for c in classes:
-            ad += '\n.. autoclass:: ' + c.name + '\n'
+            opts = c.sphinx_options
+            ad += "\n.. autoclass:: " + c.name + "\n"
             # must NOT exclude from index to keep cross-refs working
-            ad += '  :members:\n' \
-                  '  :show-inheritance:\n'
+            ad += "  :members:\n"
+            if opts.get("show_inheritance", True):
+                ad += "  :show-inheritance:\n"
+            if opts.get("show_inherited_members", False):
+                exclusions_list = opts.get("exclude_inherited_from", [])
+                exclusions = (
+                    (" " + " ".join(exclusions_list)) if exclusions_list else ""
+                )
+                ad += f"  :inherited-members:{exclusions}\n"
             if c.has_init:
                   ad += '\n  .. automethod:: __init__\n'
         
@@ -314,7 +366,7 @@ class ApiDocWriter(object):
         >>> mods = dw.discover_modules()
         >>> 'sphinx.util' in mods
         True
-        >>> dw.package_skip_patterns.append('\.util$')
+        >>> dw.package_skip_patterns.append('\\.util$')
         >>> 'sphinx.util' in dw.discover_modules()
         False
         >>>
@@ -349,11 +401,9 @@ class ApiDocWriter(object):
             if not api_str:
                 continue
             # write out to file
-            outfile = os.path.join(outdir,
-                                   m + self.rst_extension)
-            fileobj = open(outfile, 'wt')
-            fileobj.write(api_str)
-            fileobj.close()
+            outfile = os.path.join(outdir, m + self.rst_extension)
+            with open(outfile, "wt", encoding="utf-8") as fileobj:
+                fileobj.write(api_str)
             written_modules.append(m)
         self.written_modules = written_modules
 
@@ -404,10 +454,10 @@ class ApiDocWriter(object):
             relpath = outdir.replace(relative_to + os.path.sep, '')
         else:
             relpath = outdir
-        idx = open(path,'wt')
-        w = idx.write
-        w('.. AUTO-GENERATED FILE -- DO NOT EDIT!\n\n')
-        w('.. toctree::\n\n')
-        for f in self.written_modules:
-            w('   %s\n' % os.path.join(relpath,f))
-        idx.close()
+        with open(path, "wt", encoding="utf-8") as idx:
+            w = idx.write
+            w('.. AUTO-GENERATED FILE -- DO NOT EDIT!\n\n')
+            w('.. autosummary::\n'
+            '   :toctree: %s\n\n' % relpath)
+            for mod in self.written_modules:
+                w('   %s\n' % mod)

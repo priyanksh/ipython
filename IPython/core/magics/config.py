@@ -18,13 +18,13 @@ import re
 # Our own packages
 from IPython.core.error import UsageError
 from IPython.core.magic import Magics, magics_class, line_magic
-from IPython.utils.warn import error
+from logging import error
 
 #-----------------------------------------------------------------------------
 # Magic implementation classes
 #-----------------------------------------------------------------------------
 
-reg = re.compile('^\w+\.\w+$')
+reg = re.compile(r'^\w+\.\w+$')
 @magics_class
 class ConfigMagics(Magics):
 
@@ -54,71 +54,53 @@ class ConfigMagics(Magics):
 
             In [1]: %config
             Available objects for config:
-                TerminalInteractiveShell
-                HistoryManager
-                PrefilterManager
                 AliasManager
-                IPCompleter
-                PromptManager
                 DisplayFormatter
+                HistoryManager
+                IPCompleter
+                LoggingMagics
+                MagicsManager
+                OSMagics
+                PrefilterManager
+                ScriptMagics
+                TerminalInteractiveShell
 
         To view what is configurable on a given class, just pass the class
         name::
 
-            In [2]: %config IPCompleter
-            IPCompleter options
-            -----------------
-            IPCompleter.omit__names=<Enum>
-                Current: 2
-                Choices: (0, 1, 2)
-                Instruct the completer to omit private method names
-                Specifically, when completing on ``object.<tab>``.
-                When 2 [default]: all names that start with '_' will be excluded.
-                When 1: all 'magic' names (``__foo__``) will be excluded.
-                When 0: nothing will be excluded.
-            IPCompleter.merge_completions=<CBool>
-                Current: True
-                Whether to merge completion results into a single list
-                If False, only the completion results from the first non-empty
-                completer will be returned.
-            IPCompleter.limit_to__all__=<CBool>
+            In [2]: %config LoggingMagics
+            LoggingMagics(Magics) options
+            ---------------------------
+            LoggingMagics.quiet=<Bool>
+                Suppress output of log state when logging is enabled
                 Current: False
-                Instruct the completer to use __all__ for the completion
-                Specifically, when completing on ``object.<tab>``.
-                When True: only those names in obj.__all__ will be included.
-                When False [default]: the __all__ attribute is ignored
-            IPCompleter.greedy=<CBool>
-                Current: False
-                Activate greedy completion
-                This will enable completion on elements of lists, results of
-                function calls, etc., but can be unsafe because the code is
-                actually evaluated on TAB.
 
         but the real use is in setting values::
 
-            In [3]: %config IPCompleter.greedy = True
+            In [3]: %config LoggingMagics.quiet = True
 
         and these values are read from the user_ns if they are variables::
 
-            In [4]: feeling_greedy=False
+            In [4]: feeling_quiet=False
 
-            In [5]: %config IPCompleter.greedy = feeling_greedy
+            In [5]: %config LoggingMagics.quiet = feeling_quiet
 
         """
-        from IPython.config.loader import Config
+        from traitlets.config.loader import Config
         # some IPython objects are Configurable, but do not yet have
         # any configurable traits.  Exclude them from the effects of
         # this magic, as their presence is just noise:
-        configurables = [ c for c in self.shell.configurables
-                          if c.__class__.class_traits(config=True) ]
+        configurables = sorted(set([ c for c in self.shell.configurables
+                                     if c.__class__.class_traits(config=True)
+                                     ]), key=lambda x: x.__class__.__name__)
         classnames = [ c.__class__.__name__ for c in configurables ]
 
         line = s.strip()
         if not line:
             # print available configurable names
-            print "Available objects for config:"
+            print("Available objects for config:")
             for name in classnames:
-                print "    ", name
+                print("   ", name)
             return
         elif line in classnames:
             # `%config TerminalInteractiveShell` will print trait info for
@@ -128,7 +110,7 @@ class ConfigMagics(Magics):
             help = cls.class_get_help(c)
             # strip leading '--' from cl-args:
             help = re.sub(re.compile(r'^--', re.MULTILINE), '', help)
-            print help
+            print(help)
             return
         elif reg.match(line):
             cls, attr = line.split('.')
@@ -149,7 +131,7 @@ class ConfigMagics(Magics):
         # leave quotes on args when splitting, because we want
         # unquoted args to eval in user_ns
         cfg = Config()
-        exec "cfg."+line in locals(), self.shell.user_ns
+        exec("cfg."+line, self.shell.user_ns, locals())
 
         for configurable in configurables:
             try:

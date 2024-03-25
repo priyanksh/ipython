@@ -29,7 +29,7 @@ our major new features, with examples and screenshots.  We encourage you to
 read it as it provides an illustrated, high-level overview complementing the
 detailed feature breakdown in this document.
 
-.. __: http://fonnesbeck.calepin.co/innovations-in-ipython.html
+.. __: http://stronginference.com/post/innovations-in-ipython
 
 A quick summary of the major changes (see below for details):
 
@@ -155,7 +155,7 @@ cycle from several institutions:
 .. __: http://modular.math.washington.edu/grants/compmath09
 
 - Microsoft's team working on `Python Tools for Visual Studio`__ developed the 
-  integraton of IPython into the Python plugin for Visual Studio 2010.
+  integratron of IPython into the Python plugin for Visual Studio 2010.
 
 .. __: http://pytools.codeplex.com
 
@@ -232,7 +232,7 @@ may also offer a slightly more featureful application (with menus and other GUI
 elements), but we remain committed to always shipping this easy to embed
 widget.
 
-See the :ref:`Qt console section <qtconsole>` of the docs for a detailed
+See the `Jupyter Qt Console site <https://jupyter.org/qtconsole>`_ for a detailed
 description of the console's features and use.
 
 
@@ -253,8 +253,8 @@ Twisted is itself a Python library.  So while Twisted is a very capable
 framework, we think ZeroMQ fits our needs much better and we hope you will find
 the change to be a significant improvement in the long run.
 
-Our manual contains :ref:`a full description of how to use IPython for parallel
-computing <parallel_overview>`, and the `tutorial`__ presented by Min
+Our manual contains a full description of how to use IPython for parallel
+computing, and the `tutorial`__ presented by Min
 Ragan-Kelley at the SciPy 2011 conference provides a hands-on complement to the
 reference docs.
 
@@ -264,15 +264,15 @@ reference docs.
 Refactoring
 -----------
 
-As of this release, a signifiant portion of IPython has been refactored.  This
+As of this release, a significant portion of IPython has been refactored.  This
 refactoring is founded on a number of new abstractions.  The main new classes
 that implement these abstractions are:
 
-* :class:`IPython.utils.traitlets.HasTraits`.
-* :class:`IPython.config.configurable.Configurable`.
-* :class:`IPython.config.application.Application`.
-* :class:`IPython.config.loader.ConfigLoader`.
-* :class:`IPython.config.loader.Config`
+* :class:`traitlets.HasTraits`.
+* :class:`traitlets.config.configurable.Configurable`.
+* :class:`traitlets.config.application.Application`.
+* :class:`traitlets.config.loader.ConfigLoader`.
+* :class:`traitlets.config.loader.Config`
 
 We are still in the process of writing developer focused documentation about
 these classes, but for now our :ref:`configuration documentation
@@ -287,7 +287,7 @@ that assigning values is pure Python assignment.  Simple flags exist for
 commonly used options, these are always prefixed with '--'.
 
 The IPython command-line help has the details of all the options (via
-``ipythyon --help``), but a simple example should clarify things; the ``pylab``
+``ipython --help``), but a simple example should clarify things; the ``pylab``
 flag can be used to start in pylab mode with the qt4 backend::
 
   ipython --pylab=qt
@@ -309,7 +309,7 @@ be started by calling ``ipython qtconsole``. The protocol is :ref:`documented
 <messaging>`.
 
 The parallel computing framework has also been rewritten using ZMQ. The
-protocol is described :ref:`here <parallel_messages>`, and the code is in the
+protocol is described :ref:`here <ipyparallel:/reference/messages.md>`, and the code is in the
 new :mod:`IPython.parallel` module.
 
 .. _python3_011:
@@ -383,7 +383,7 @@ Additional new features
 
 .. sourcecode:: python
 
-    from IPython.config.application import Application
+    from traitlets.config.application import Application
     logger = Application.instance().log
 
 * You can now get help on an object halfway through typing a command. For
@@ -403,7 +403,7 @@ Additional new features
   configuration system :ref:`documentation <config_index>` for more details.
 
 * The :class:`~IPython.core.interactiveshell.InteractiveShell` class is now a
-  :class:`~IPython.config.configurable.Configurable` subclass and has traitlets
+  :class:`~traitlets.config.configurable.Configurable` subclass and has traitlets
   that determine the defaults and runtime environment. The ``__init__`` method
   has also been refactored so this class can be instantiated and run without
   the old :mod:`ipmaker` module.
@@ -426,7 +426,7 @@ Additional new features
   strings like ``foo.bar.Bar`` to the actual class.
 
 * Completely refactored the :mod:`IPython.core.prefilter` module into
-  :class:`~IPython.config.configurable.Configurable` subclasses. Added a new
+  :class:`~traitlets.config.configurable.Configurable` subclasses. Added a new
   layer into the prefilter system, called "transformations" that all new
   prefilter logic should use (rather than the older "checker/handler"
   approach).
@@ -439,22 +439,22 @@ Additional new features
   instance and call it. In later calls, it just calls the previously created
   :class:`~IPython.frontend.terminal.embed.InteractiveShellEmbed`.
 
-* Created a configuration system (:mod:`IPython.config.configurable`) that is
-  based on :mod:`IPython.utils.traitlets`. Configurables are arranged into a
+* Created a configuration system (:mod:`traitlets.config.configurable`) that is
+  based on :mod:`traitlets`. Configurables are arranged into a
   runtime containment tree (not inheritance) that i) automatically propagates
   configuration information and ii) allows singletons to discover each other in
   a loosely coupled manner. In the future all parts of IPython will be
-  subclasses of :class:`~IPython.config.configurable.Configurable`. All IPython
+  subclasses of :class:`~traitlets.config.configurable.Configurable`. All IPython
   developers should become familiar with the config system.
 
-* Created a new :class:`~IPython.config.loader.Config` for holding
+* Created a new :class:`~traitlets.config.loader.Config` for holding
   configuration information. This is a dict like class with a few extras: i)
   it supports attribute style access, ii) it has a merge function that merges
-  two :class:`~IPython.config.loader.Config` instances recursively and iii) it
-  will automatically create sub-:class:`~IPython.config.loader.Config`
+  two :class:`~traitlets.config.loader.Config` instances recursively and iii) it
+  will automatically create sub-:class:`~traitlets.config.loader.Config`
   instances for attributes that start with an uppercase character.
 
-* Created new configuration loaders in :mod:`IPython.config.loader`. These
+* Created new configuration loaders in :mod:`traitlets.config.loader`. These
   loaders provide a unified loading interface for all configuration
   information including command line arguments and configuration files. We
   have two default implementations based on :mod:`argparse` and plain python
@@ -474,12 +474,12 @@ Additional new features
   as strings, like ``foo.bar.Bar``. This is needed for forward declarations.
   But, this was implemented in a careful way so that string to class
   resolution is done at a single point, when the parent
-  :class:`~IPython.utils.traitlets.HasTraitlets` is instantiated.
+  :class:`~traitlets.HasTraitlets` is instantiated.
 
 * :mod:`IPython.utils.ipstruct` has been refactored to be a subclass of 
   dict.  It also now has full docstrings and doctests.
 
-* Created a Traits like implementation in :mod:`IPython.utils.traitlets`.  This
+* Created a Traits like implementation in :mod:`traitlets`.  This
   is a pure Python, lightweight version of a library that is similar to
   Enthought's Traits project, but has no dependencies on Enthought's code.  We
   are using this for validation, defaults and notification in our new component
@@ -511,7 +511,7 @@ Backwards incompatible changes
   ``ipython profile create <name>``.
 
 * All IPython applications have been rewritten to use
-  :class:`~IPython.config.loader.KeyValueConfigLoader`. This means that
+  :class:`~traitlets.config.loader.KeyValueConfigLoader`. This means that
   command-line options have changed. Now, all configurable values are accessible
   from the command-line with the same syntax as in a configuration file.
 
@@ -547,12 +547,12 @@ Backwards incompatible changes
 
 * Old style configuration files :file:`ipythonrc` and :file:`ipy_user_conf.py`
   are no longer supported. Users should migrate there configuration files to
-  the new format described :ref:`here <config_overview>` and :ref:`here
-  <configuring_ipython>`.
+  the new format described :doc:`here </config/intro>` and
+  :ref:`here <config_overview>`.
 
 * The old IPython extension API that relied on :func:`ipapi` has been
   completely removed. The new extension API is described :ref:`here
-  <configuring_ipython>`.
+  <extensions_overview>`.
 
 * Support for ``qt3`` has been dropped.  Users who need this should use
   previous versions of IPython.
@@ -568,8 +568,8 @@ Backwards incompatible changes
   :mod:`IPython.quarantine`.  All existing top-level modules have been
   moved to appropriate sub-packages.  All internal import statements
   have been updated and tests have been added.  The build system (setup.py
-  and friends) have been updated.  See :ref:`this section <module_reorg>` of the
-  documentation for descriptions of these new sub-packages.
+  and friends) have been updated. See :doc:`/api/index` for details of these
+  new sub-packages.
 
 * :mod:`IPython.ipapi` has been moved to :mod:`IPython.core.ipapi`.
   :mod:`IPython.Shell` and :mod:`IPython.iplib` have been split and removed as
@@ -580,7 +580,7 @@ Backwards incompatible changes
   :mod:`IPython.deathrow`. :mod:`IPython.quarantine` contains modules that we
   plan on keeping but that need to be updated. :mod:`IPython.deathrow` contains
   modules that are either dead or that should be maintained as third party
-  libraries. More details about this can be found :ref:`here <module_reorg>`.
+  libraries.
 
 * Previous IPython GUIs in :mod:`IPython.frontend` and :mod:`IPython.gui` are
   likely broken, and have been removed to :mod:`IPython.deathrow` because of the

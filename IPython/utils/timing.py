@@ -23,6 +23,11 @@ import time
 # If possible (Unix), use the resource module instead of time.clock()
 try:
     import resource
+except ModuleNotFoundError:
+    resource = None  # type: ignore [assignment]
+
+# Some implementations (like jyputerlite) don't have getrusage
+if resource is not None and hasattr(resource, "getrusage"):
     def clocku():
         """clocku() -> floating point number
 
@@ -56,15 +61,17 @@ try:
 
         Similar to clock(), but return a tuple of user/system times."""
         return resource.getrusage(resource.RUSAGE_SELF)[:2]
-except ImportError:
+
+else:
     # There is no distinction of user/system time under windows, so we just use
-    # time.clock() for everything...
-    clocku = clocks = clock = time.clock
+    # time.process_time() for everything...
+    clocku = clocks = clock = time.process_time
+
     def clock2():
         """Under windows, system CPU time can't be measured.
 
-        This just returns clock() and zero."""
-        return time.clock(),0.0
+        This just returns process_time() and zero."""
+        return time.process_time(), 0.0
 
     
 def timings_out(reps,func,*args,**kw):
@@ -87,7 +94,7 @@ def timings_out(reps,func,*args,**kw):
         out = func(*args,**kw)
         tot_time = clock()-start
     else:
-        rng = xrange(reps-1) # the last time is executed separately to store output
+        rng = range(reps-1) # the last time is executed separately to store output
         start = clock()
         for dummy in rng: func(*args,**kw)
         out = func(*args,**kw)  # one last time

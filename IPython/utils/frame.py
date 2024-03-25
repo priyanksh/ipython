@@ -15,31 +15,30 @@ Utilities for working with stack frames.
 #-----------------------------------------------------------------------------
 
 import sys
-from IPython.utils import py3compat
 
 #-----------------------------------------------------------------------------
 # Code
 #-----------------------------------------------------------------------------
 
-@py3compat.doctest_refactor_print
 def extract_vars(*names,**kw):
     """Extract a set of variables by name from another frame.
 
-    :Parameters:
-      - `*names`: strings
+    Parameters
+    ----------
+    *names : str
         One or more variable names which will be extracted from the caller's
-    frame.
-
-    :Keywords:
-      - `depth`: integer (0)
+        frame.
+    **kw : integer, optional
         How many frames in the stack to walk when looking for your variables.
+        The default is 0, which will use the frame where the call was made.
 
-
-    Examples:
+    Examples
+    --------
+    ::
 
         In [2]: def func(x):
            ...:     y = 1
-           ...:     print sorted(extract_vars('x','y').items())
+           ...:     print(sorted(extract_vars('x','y').items()))
            ...:
 
         In [3]: func('hello')
@@ -47,7 +46,7 @@ def extract_vars(*names,**kw):
     """
 
     depth = kw.get('depth',0)
-    
+
     callerNS = sys._getframe(depth+1).f_locals
     return dict((k,callerNS[k]) for k in names)
 
@@ -56,7 +55,7 @@ def extract_vars_above(*names):
     """Extract a set of variables by name from another frame.
 
     Similar to extractVars(), but with a specified depth of 1, so that names
-    are exctracted exactly from above the caller.
+    are extracted exactly from above the caller.
 
     This is simply a convenience function so that the very common case (for us)
     of skipping exactly 1 frame doesn't have to construct a special dict for
@@ -78,17 +77,16 @@ def debugx(expr,pre_msg=''):
     expr->value pair."""
 
     cf = sys._getframe(1)
-    print '[DBG:%s] %s%s -> %r' % (cf.f_code.co_name,pre_msg,expr,
-                                   eval(expr,cf.f_globals,cf.f_locals))
+    print('[DBG:%s] %s%s -> %r' % (cf.f_code.co_name,pre_msg,expr,
+                                   eval(expr,cf.f_globals,cf.f_locals)))
 
 
 # deactivate it by uncommenting the following line, which makes it a no-op
 #def debugx(expr,pre_msg=''): pass
 
 def extract_module_locals(depth=0):
-    """Returns (module, locals) of the funciton `depth` frames away from the caller"""
+    """Returns (module, locals) of the function `depth` frames away from the caller"""
     f = sys._getframe(depth + 1)
     global_ns = f.f_globals
     module = sys.modules[global_ns['__name__']]
     return (module, f.f_locals)
-

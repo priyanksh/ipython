@@ -33,7 +33,7 @@ New features
 
 * A new, still experimental but highly functional, WX shell by Gael Varoquaux.
   This work was sponsored by Enthought, and while it's still very new, it is
-  based on a more cleanly organized arhictecture of the various IPython
+  based on a more cleanly organized architecture of the various IPython
   components. We will continue to develop this over the next few releases as a
   model for GUI components that use IPython.
 
@@ -69,7 +69,7 @@ New features
   method that has the same syntax as the built-in `map`.  We have also defined
   a `mapper` factory interface that creates objects that implement
   :class:`IPython.kernel.mapper.IMapper` for different controllers.  Both the
-  multiengine and task controller now have mapping capabilties.
+  multiengine and task controller now have mapping capabilities.
 
 * The parallel function capabilities have been reworks.  The major changes are
   that i) there is now an `@parallel` magic that creates parallel functions,
@@ -78,10 +78,10 @@ New features
 
 * All of the parallel computing capabilities from `ipython1-dev` have been
   merged into IPython proper.  This resulted in the following new subpackages:
-  :mod:`IPython.kernel`, :mod:`IPython.kernel.core`, :mod:`IPython.config`,
+  :mod:`IPython.kernel`, :mod:`IPython.kernel.core`, :mod:`traitlets.config`,
   :mod:`IPython.tools` and :mod:`IPython.testing`.
 
-* As part of merging in the `ipython1-dev` stuff, the `setup.py` script and
+* As part of merging in the `ipython1-dev` stuff, the ``setup.py`` script and
   friends have been completely refactored.  Now we are checking for
   dependencies using the approach that matplotlib uses.
 
@@ -161,7 +161,7 @@ Backwards incompatible changes
   `'basic'` to `'b'`.
 
 * IPython has a larger set of dependencies if you want all of its capabilities.
-  See the `setup.py` script for details.
+  See the ``setup.py`` script for details.
 
 * The constructors for :class:`IPython.kernel.client.MultiEngineClient` and 
   :class:`IPython.kernel.client.TaskClient` no longer take the (ip,port) tuple.

@@ -22,7 +22,6 @@ Authors
 - Fernando Perez <Fernando.Perez@berkeley.edu>
 """
 
-from __future__ import absolute_import
 
 #-----------------------------------------------------------------------------
 #  Copyright (C) 2009-2011  The IPython Development Team
@@ -40,12 +39,7 @@ import re
 import sys
 import unittest
 from doctest import DocTestFinder, DocTestRunner, TestResults
-
-# We already have python3-compliant code for parametric tests
-if sys.version[0]=='2':
-    from ._paramtestpy2 import ParametricTestCase
-else:
-    from ._paramtestpy3 import ParametricTestCase
+from IPython.terminal.interactiveshell import InteractiveShell
 
 #-----------------------------------------------------------------------------
 # Classes and functions
@@ -56,14 +50,21 @@ def count_failures(runner):
 
     Code modeled after the summarize() method in doctest.
     """
-    return [TestResults(f, t) for f, t in runner._name2ft.values() if f > 0 ]
+    if sys.version_info < (3, 13):
+        return [TestResults(f, t) for f, t in runner._name2ft.values() if f > 0]
+    else:
+        return [
+            TestResults(failure, try_)
+            for failure, try_, skip in runner._stats.values()
+            if failure > 0
+        ]
 
 
 class IPython2PythonConverter(object):
     """Convert IPython 'syntax' to valid Python.
 
     Eventually this code may grow to be the full IPython syntax conversion
-    implementation, but for now it only does prompt convertion."""
+    implementation, but for now it only does prompt conversion."""
     
     def __init__(self):
         self.rps1 = re.compile(r'In\ \[\d+\]: ')
@@ -71,8 +72,8 @@ class IPython2PythonConverter(object):
         self.rout = re.compile(r'Out\[\d+\]: \s*?\n?')
         self.pyps1 = '>>> '
         self.pyps2 = '... '
-        self.rpyps1 = re.compile ('(\s*%s)(.*)$' % self.pyps1)
-        self.rpyps2 = re.compile ('(\s*%s)(.*)$' % self.pyps2)
+        self.rpyps1 = re.compile (r'(\s*%s)(.*)$' % self.pyps1)
+        self.rpyps2 = re.compile (r'(\s*%s)(.*)$' % self.pyps2)
 
     def __call__(self, ds):
         """Convert IPython prompts to python ones in a string."""
@@ -86,7 +87,7 @@ class IPython2PythonConverter(object):
         dnew = self.rps1.sub(pyps1, dnew)
         dnew = self.rps2.sub(pyps2, dnew)
         dnew = self.rout.sub(pyout, dnew)
-        ip = globalipapp.get_ipython()
+        ip = InteractiveShell.instance()
 
         # Convert input IPython source into valid Python.
         out = []
@@ -154,14 +155,15 @@ class Doc2UnitTester(object):
             def test(self):
                 # Make a new runner per function to be tested
                 runner = DocTestRunner(verbose=d2u.verbose)
-                map(runner.run, d2u.finder.find(func, func.__name__))
+                for the_test in d2u.finder.find(func, func.__name__):
+                    runner.run(the_test)
                 failed = count_failures(runner)
                 if failed:
                     # Since we only looked at a single function's docstring,
                     # failed should contain at most one item.  More than that
                     # is a case we can't handle and should error out on
                     if len(failed) > 1:
-                        err = "Invalid number of test results:" % failed
+                        err = "Invalid number of test results: %s" % failed
                         raise ValueError(err)
                     # Report a normal failure.
                     self.fail('failed doctests: %s' % str(failed[0]))

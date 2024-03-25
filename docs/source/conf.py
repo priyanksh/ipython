@@ -16,15 +16,39 @@
 # serve to show the default value.
 
 import sys, os
+from pathlib import Path
 
+# https://read-the-docs.readthedocs.io/en/latest/faq.html
 ON_RTD = os.environ.get('READTHEDOCS', None) == 'True'
 
 if ON_RTD:
-    # Mock the presence of matplotlib, which we don't have on RTD
-    # see
-    # http://read-the-docs.readthedocs.org/en/latest/faq.html
     tags.add('rtd')
-    
+
+    # RTD doesn't use the Makefile, so re-run autogen_{things}.py here.
+    for name in ("config", "api", "magics", "shortcuts"):
+        fname = Path("autogen_{}.py".format(name))
+        fpath = (Path(__file__).parent).joinpath("..", fname)
+        with open(fpath, encoding="utf-8") as f:
+            exec(
+                compile(f.read(), fname, "exec"),
+                {
+                    "__file__": fpath,
+                    "__name__": "__main__",
+                },
+            )
+import sphinx_rtd_theme
+
+html_theme = "sphinx_rtd_theme"
+html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+
+# Allow Python scripts to change behaviour during sphinx run
+os.environ["IN_SPHINX_RUN"] = "True"
+
+autodoc_type_aliases = {
+    "Matcher": " IPython.core.completer.Matcher",
+    "MatcherAPIv1": " IPython.core.completer.MatcherAPIv1",
+}
+
 # If your extensions are in another directory, add it here. If the directory
 # is relative to the documentation root, use os.path.abspath to make it
 # absolute, like shown here.
@@ -32,7 +56,14 @@ sys.path.insert(0, os.path.abspath('../sphinxext'))
 
 # We load the ipython release info into a dict by explicit execution
 iprelease = {}
-execfile('../../IPython/core/release.py',iprelease)
+exec(
+    compile(
+        open("../../IPython/core/release.py", encoding="utf-8").read(),
+        "../../IPython/core/release.py",
+        "exec",
+    ),
+    iprelease,
+)
 
 # General configuration
 # ---------------------
@@ -40,25 +71,20 @@ execfile('../../IPython/core/release.py',iprelease)
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 extensions = [
-    'matplotlib.sphinxext.mathmpl',
-    'matplotlib.sphinxext.only_directives',
-    'matplotlib.sphinxext.plot_directive',
-    'sphinx.ext.autodoc',
-    'sphinx.ext.doctest',
-    'sphinx.ext.inheritance_diagram',
-    'IPython.sphinxext.ipython_console_highlighting',
-    'IPython.sphinxext.ipython_directive',
-    'numpydoc',  # to preprocess docstrings
-    'github',  # for easy GitHub links
+    "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
+    "sphinx.ext.doctest",
+    "sphinx.ext.inheritance_diagram",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.graphviz",
+    "sphinxcontrib.jquery",
+    "IPython.sphinxext.ipython_console_highlighting",
+    "IPython.sphinxext.ipython_directive",
+    "sphinx.ext.napoleon",  # to preprocess docstrings
+    "github",  # for easy GitHub links
+    "magics",
+    "configtraits",
 ]
-
-if ON_RTD:
-    # Remove extensions not currently supported on RTD
-    extensions.remove('matplotlib.sphinxext.only_directives')
-    extensions.remove('matplotlib.sphinxext.mathmpl')
-    extensions.remove('matplotlib.sphinxext.plot_directive')
-    extensions.remove('IPython.sphinxext.ipython_directive')
-    extensions.remove('IPython.sphinxext.ipython_console_highlighting')
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -66,31 +92,83 @@ templates_path = ['_templates']
 # The suffix of source filenames.
 source_suffix = '.rst'
 
-if iprelease['_version_extra']:
-    rst_prolog = """
-    .. note::
+rst_prolog = ''
 
-        This documentation is for a development version of IPython. There may be
-        significant differences from the latest stable release (0.13.2).
+def is_stable(extra):
+    for ext in {'dev', 'b', 'rc'}:
+        if ext in extra:
+            return False
+    return True
 
-    """
+if is_stable(iprelease['_version_extra']):
+    tags.add('ipystable')
+    print('Adding Tag: ipystable')
+else:
+    tags.add('ipydev')
+    print('Adding Tag: ipydev')
+    rst_prolog += """
+.. warning::
+
+    This documentation covers a development version of IPython. The development
+    version may differ significantly from the latest stable release.
+"""
+
+rst_prolog += """
+.. important::
+
+    This documentation covers IPython versions 6.0 and higher. Beginning with
+    version 6.0, IPython stopped supporting compatibility with Python versions
+    lower than 3.3 including all versions of Python 2.7.
+
+    If you are looking for an IPython version compatible with Python 2.7,
+    please use the IPython 5.x LTS release and refer to its documentation (LTS
+    is the long term support release).
+
+"""
 
 # The master toctree document.
 master_doc = 'index'
 
 # General substitutions.
 project = 'IPython'
-copyright = '2008, The IPython Development Team'
+copyright = 'The IPython Development Team'
 
 # ghissue config
 github_project_url = "https://github.com/ipython/ipython"
+
+# numpydoc config
+numpydoc_show_class_members = False # Otherwise Sphinx emits thousands of warnings
+numpydoc_class_members_toctree = False
+warning_is_error = True
+
+import logging
+
+class ConfigtraitFilter(logging.Filter):
+    """
+    This is a filter to remove in sphinx 3+ the error about config traits being duplicated.
+
+    As we autogenerate configuration traits from, subclasses have lots of
+    duplication and we want to silence them. Indeed we build on travis with
+    warnings-as-error set to True, so those duplicate items make the build fail.
+    """
+
+    def filter(self, record):
+        if record.args and record.args[0] == 'configtrait' and 'duplicate' in record.msg:
+            return False
+        return True
+
+ct_filter = ConfigtraitFilter()
+
+import sphinx.util
+logger = sphinx.util.logging.getLogger('sphinx.domains.std').logger
+
+logger.addFilter(ct_filter)
 
 # The default replacements for |version| and |release|, also used in various
 # other places throughout the built documents.
 #
 # The full version, including alpha/beta/rc tags.
-codename = iprelease['codename']
-release = "%s: %s" % (iprelease['version'], codename)
+release = "%s" % iprelease['version']
 # Just the X.Y.Z part, no '-dev'
 version = iprelease['version'].split('-', 1)[0]
 
@@ -104,9 +182,9 @@ today_fmt = '%B %d, %Y'
 # List of documents that shouldn't be included in the build.
 #unused_docs = []
 
-# List of directories, relative to source directories, that shouldn't be searched
-# for source files.
-exclude_dirs = ['attic']
+# Exclude these glob-style patterns when looking for source files. They are
+# relative to the source/ directory.
+exclude_patterns = ["**.ipynb_checkpoints"]
 
 # If true, '()' will be appended to :func: etc. cross-reference text.
 #add_function_parentheses = True
@@ -122,6 +200,8 @@ exclude_dirs = ['attic']
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
+# Set the default role so we can use `foo` instead of ``foo``
+default_role = 'literal'
 
 # Options for HTML output
 # -----------------------
@@ -129,7 +209,7 @@ pygments_style = 'sphinx'
 # The style sheet to use for HTML and HTML Help pages. A file of that name
 # must exist either in Sphinx' static/ path, or in one of the custom paths
 # given in html_static_path.
-html_style = 'default.css'
+# html_style = 'default.css'
 
 # The name for this set of Sphinx documents.  If None, it defaults to
 # "<project> v<release> documentation".
@@ -144,6 +224,8 @@ html_style = 'default.css'
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
 
+# Favicon needs the directory name
+html_favicon = '_static/favicon.ico'
 # If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
 # using the given strftime format.
 html_last_updated_fmt = '%b %d, %Y'
@@ -158,7 +240,10 @@ html_last_updated_fmt = '%b %d, %Y'
 # Additional templates that should be rendered to pages, maps page names to
 # template names.
 html_additional_pages = {
-                         'interactive/htmlnotebook': 'htmlnotebook.html',
+    'interactive/htmlnotebook': 'notebook_redirect.html',
+    'interactive/notebook': 'notebook_redirect.html',
+    'interactive/nbconvert': 'notebook_redirect.html',
+    'interactive/public_server': 'notebook_redirect.html',
 }
 
 # If false, no module index is generated.
@@ -178,12 +263,21 @@ html_additional_pages = {
 # Output file base name for HTML help builder.
 htmlhelp_basename = 'ipythondoc'
 
+intersphinx_mapping = {'python': ('https://docs.python.org/3/', None),
+                       'rpy2': ('https://rpy2.github.io/doc/latest/html/', None),
+                       'jupyterclient': ('https://jupyter-client.readthedocs.io/en/latest/', None),
+                       'jupyter': ('https://jupyter.readthedocs.io/en/latest/', None),
+                       'jedi': ('https://jedi.readthedocs.io/en/latest/', None),
+                       'traitlets': ('https://traitlets.readthedocs.io/en/latest/', None),
+                       'ipykernel': ('https://ipykernel.readthedocs.io/en/latest/', None),
+                       'prompt_toolkit' : ('https://python-prompt-toolkit.readthedocs.io/en/stable/', None),
+                       'ipywidgets': ('https://ipywidgets.readthedocs.io/en/stable/', None),
+                       'ipyparallel': ('https://ipyparallel.readthedocs.io/en/stable/', None),
+                       'pip': ('https://pip.pypa.io/en/stable/', None)
+                      }
 
 # Options for LaTeX output
 # ------------------------
-
-# The paper size ('letter' or 'a4').
-latex_paper_size = 'letter'
 
 # The font size ('10pt', '11pt' or '12pt').
 latex_font_size = '11pt'
@@ -193,10 +287,10 @@ latex_font_size = '11pt'
 
 latex_documents = [
     ('index', 'ipython.tex', 'IPython Documentation',
-     ur"""The IPython Development Team""", 'manual', True),
+     u"""The IPython Development Team""", 'manual', True),
     ('parallel/winhpc_index', 'winhpc_whitepaper.tex',
      'Using IPython on Windows HPC Server 2008',
-     ur"Brian E. Granger", 'manual', True)
+     u"Brian E. Granger", 'manual', True)
 ]
 
 # The name of an image file (relative to this directory) to place at the top of
@@ -228,6 +322,12 @@ texinfo_documents = [
    'Programming',
    1),
 ]
+
+modindex_common_prefix = ['IPython.']
+
+
+def setup(app):
+    app.add_css_file("theme_overrides.css")
 
 
 # Cleanup

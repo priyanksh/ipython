@@ -4,13 +4,32 @@
 Configuration and customization
 ===============================
 
+Configuring IPython
+-------------------
+
 .. toctree::
    :maxdepth: 2
 
-   overview
+   intro
+   options/index
+   shortcuts/index
+   details
+
+.. seealso::
+
+   :doc:`/development/config`
+      Technical details of the config system.
+
+Extending and integrating with IPython
+--------------------------------------
+
+.. toctree::
+   :maxdepth: 2
+
    extensions/index
-   ipython
    integrating
-   editors
+   custommagics
+   shell_mimerenderer
    inputtransforms
-   old
+   callbacks
+   eventloops

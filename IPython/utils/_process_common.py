@@ -17,6 +17,7 @@ of subprocess utilities, and it contains tools that are common to all of them.
 import subprocess
 import shlex
 import sys
+import os
 
 from IPython.utils import py3compat
 
@@ -47,18 +48,17 @@ def process_handler(cmd, callback, stderr=subprocess.PIPE):
 
     Parameters
     ----------
-    cmd : str
-      A string to be executed with the underlying system shell (by calling
-    :func:`Popen` with ``shell=True``.
-
+    cmd : str or list
+        A command to be executed by the system, using :class:`subprocess.Popen`.
+        If a string is passed, it will be run in the system shell. If a list is
+        passed, it will be used directly as arguments.
     callback : callable
-      A one-argument function that will be called with the Popen object.
-
+        A one-argument function that will be called with the Popen object.
     stderr : file descriptor number, optional
-      By default this is set to ``subprocess.PIPE``, but you can also pass the
-      value ``subprocess.STDOUT`` to force the subprocess' stderr to go into
-      the same file descriptor as its stdout.  This is useful to read stdout
-      and stderr combined in the order they are generated.
+        By default this is set to ``subprocess.PIPE``, but you can also pass the
+        value ``subprocess.STDOUT`` to force the subprocess' stderr to go into
+        the same file descriptor as its stdout.  This is useful to read stdout
+        and stderr combined in the order they are generated.
 
     Returns
     -------
@@ -68,7 +68,14 @@ def process_handler(cmd, callback, stderr=subprocess.PIPE):
     sys.stderr.flush()
     # On win32, close_fds can't be true when using pipes for stdin/out/err
     close_fds = sys.platform != 'win32'
-    p = subprocess.Popen(cmd, shell=True,
+    # Determine if cmd should be run with system shell.
+    shell = isinstance(cmd, str)
+    # On POSIX systems run shell commands with user-preferred shell.
+    executable = None
+    if shell and os.name == 'posix' and 'SHELL' in os.environ:
+        executable = os.environ['SHELL']
+    p = subprocess.Popen(cmd, shell=shell,
+                         executable=executable,
                          stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE,
                          stderr=stderr,
@@ -107,13 +114,13 @@ def getoutput(cmd):
 
     Parameters
     ----------
-    cmd : str
-      A command to be executed in the system shell.
+    cmd : str or list
+        A command to be executed in the system shell.
 
     Returns
     -------
     output : str
-      A string containing the combination of stdout and stderr from the
+        A string containing the combination of stdout and stderr from the
     subprocess, in whatever order the subprocess originally wrote to its
     file descriptors (so the order of the information in this string is the
     correct order as would be seen if running the command in a terminal).
@@ -121,7 +128,7 @@ def getoutput(cmd):
     out = process_handler(cmd, lambda p: p.communicate()[0], subprocess.STDOUT)
     if out is None:
         return ''
-    return py3compat.bytes_to_str(out)
+    return py3compat.decode(out)
 
 
 def getoutputerror(cmd):
@@ -131,8 +138,8 @@ def getoutputerror(cmd):
 
     Parameters
     ----------
-    cmd : str
-      A command to be executed in the system shell.
+    cmd : str or list
+        A command to be executed in the system shell.
 
     Returns
     -------
@@ -149,8 +156,8 @@ def get_output_error_code(cmd):
 
     Parameters
     ----------
-    cmd : str
-      A command to be executed in the system shell.
+    cmd : str or list
+        A command to be executed in the system shell.
 
     Returns
     -------
@@ -163,7 +170,7 @@ def get_output_error_code(cmd):
     if out_err is None:
         return '', '', p.returncode
     out, err = out_err
-    return py3compat.bytes_to_str(out), py3compat.bytes_to_str(err), p.returncode
+    return py3compat.decode(out), py3compat.decode(err), p.returncode
 
 def arg_split(s, posix=False, strict=True):
     """Split a command line's arguments in a shell-like manner.
@@ -178,14 +185,6 @@ def arg_split(s, posix=False, strict=True):
     command-line args.
     """
 
-    # Unfortunately, python's shlex module is buggy with unicode input:
-    # http://bugs.python.org/issue1170
-    # At least encoding the input when it's unicode seems to help, but there
-    # may be more problems lurking.  Apparently this is fixed in python3.
-    is_unicode = False
-    if (not py3compat.PY3) and isinstance(s, unicode):
-        is_unicode = True
-        s = s.encode('utf-8')
     lex = shlex.shlex(s, posix=posix)
     lex.whitespace_split = True
     # Extract tokens, ensuring that things like leaving open quotes
@@ -207,8 +206,5 @@ def arg_split(s, posix=False, strict=True):
             # couldn't parse, get remaining blob as last token
             tokens.append(lex.token)
             break
-    
-    if is_unicode:
-        # Convert the tokens back to unicode.
-        tokens = [x.decode('utf-8') for x in tokens]
+
     return tokens

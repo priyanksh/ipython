@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Tools for coloring text in ANSI terminals.
 """
 
@@ -9,11 +8,15 @@
 #  the file COPYING, distributed as part of this software.
 #*****************************************************************************
 
-__all__ = ['TermColors','InputTermColors','ColorScheme','ColorSchemeTable']
 
 import os
+import warnings
 
 from IPython.utils.ipstruct import Struct
+
+__all__ = ["TermColors", "InputTermColors", "ColorScheme", "ColorSchemeTable"]
+
+_sentinel = object()
 
 color_templates = (
         # Dark colors
@@ -48,8 +51,9 @@ color_templates = (
 def make_color_table(in_class):
     """Build a set of color attributes in a class.
 
-    Helper function for building the *TermColors classes."""
-
+    Helper function for building the :class:`TermColors` and
+    :class`InputTermColors`.
+    """
     for name,value in color_templates:
         setattr(in_class,name,in_class._base % value)
 
@@ -73,8 +77,8 @@ make_color_table(TermColors)
 class InputTermColors:
     """Color escape sequences for input prompts.
 
-    This class is similar to TermColors, but the escapes are wrapped in \001
-    and \002 so that readline can properly know the length of each line and
+    This class is similar to TermColors, but the escapes are wrapped in \\001
+    and \\002 so that readline can properly know the length of each line and
     can wrap lines accordingly.  Use this class for any colored text which
     needs to be used in input prompts, such as in calls to raw_input().
 
@@ -109,8 +113,22 @@ for name, value in color_templates:
 
 class ColorScheme:
     """Generic color scheme class. Just a name and a Struct."""
-    def __init__(self,__scheme_name_,colordict=None,**colormap):
+
+    name: str
+    colors: Struct
+
+    def __init__(self, __scheme_name_, colordict=None, **colormap):
         self.name = __scheme_name_
+        if colormap:
+            warnings.warn(
+                "Passing each colors as a kwarg to ColorScheme is "
+                "considered for deprecation. Please pass a "
+                "a single dict as second parameter. If you are using this"
+                "feature, please comment an subscribe to issue "
+                "https://github.com/ipython/ipython/issues/14304",
+                PendingDeprecationWarning,
+                stacklevel=2,
+            )
         if colordict is None:
             self.colors = Struct(**colormap)
         else:
@@ -131,7 +149,7 @@ class ColorSchemeTable(dict):
     active_scheme_name -> obvious
     active_colors -> actual color table of the active scheme"""
 
-    def __init__(self,scheme_list=None,default_scheme=''):
+    def __init__(self, scheme_list=None, default_scheme=''):
         """Create a table of color schemes.
 
         The table can be created empty and manually filled or it can be
@@ -154,19 +172,36 @@ class ColorSchemeTable(dict):
         """Return full copy of object"""
         return ColorSchemeTable(self.values(),self.active_scheme_name)
 
-    def add_scheme(self,new_scheme):
+    def __setitem__(self, key: str, value: ColorScheme):
+        assert isinstance(key, str)
+        assert isinstance(value, ColorScheme)
+        super().__setitem__(key, value)
+
+    def add_scheme(self, new_scheme):
         """Add a new color scheme to the table."""
-        if not isinstance(new_scheme,ColorScheme):
+        if not isinstance(new_scheme, ColorScheme):
             raise ValueError('ColorSchemeTable only accepts ColorScheme instances')
         self[new_scheme.name] = new_scheme
 
-    def set_active_scheme(self,scheme,case_sensitive=0):
+    def set_active_scheme(self, scheme, case_sensitive=_sentinel):
         """Set the currently active scheme.
 
         Names are by default compared in a case-insensitive way, but this can
         be changed by setting the parameter case_sensitive to true."""
 
-        scheme_names = self.keys()
+        if case_sensitive is _sentinel:
+            case_sensitive = False
+        else:
+            warnings.warn(
+                "set_active_scheme(case_sensitive=...) is Pending "
+                "deprecation. Please comment on "
+                "https://github.com/ipython/ipython/issues/14306 "
+                "to let the ipython maintainer that you are affected.",
+                PendingDeprecationWarning,
+                stacklevel=2,
+            )
+
+        scheme_names = list(self.keys())
         if case_sensitive:
             valid_schemes = scheme_names
             scheme_test = scheme
@@ -175,9 +210,9 @@ class ColorSchemeTable(dict):
             scheme_test = scheme.lower()
         try:
             scheme_idx = valid_schemes.index(scheme_test)
-        except ValueError:
+        except ValueError as e:
             raise ValueError('Unrecognized color scheme: ' + scheme + \
-                  '\nValid schemes: '+str(scheme_names).replace("'', ",''))
+                  '\nValid schemes: '+str(scheme_names).replace("'', ",'')) from e
         else:
             active = scheme_names[scheme_idx]
             self.active_scheme_name = active

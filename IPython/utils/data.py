@@ -9,6 +9,7 @@
 #  the file COPYING, distributed as part of this software.
 #-----------------------------------------------------------------------------
 
+
 def uniq_stable(elems):
     """uniq_stable(elems) -> list
 
@@ -22,14 +23,8 @@ def uniq_stable(elems):
     return [x for x in elems if x not in seen and not seen.add(x)]
 
 
-def flatten(seq):
-    """Flatten a list of lists (NOT recursive, only works for 2d lists)."""
-
-    return [x for subseq in seq for x in subseq]
-    
-
 def chop(seq, size):
     """Chop a sequence into chunks of the given size."""
-    return [seq[i:i+size] for i in xrange(0,len(seq),size)]
+    return [seq[i:i+size] for i in range(0,len(seq),size)]
 
 

@@ -11,7 +11,7 @@ Authors:
 """
 
 #-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
+#  Copyright (C) 2008  The IPython Development Team
 #
 #  Distributed under the terms of the BSD License.  The full license is in
 #  the file COPYING, distributed as part of this software.
@@ -23,13 +23,14 @@ Authors:
 
 import os
 
-from IPython.config.application import Application
+from traitlets.config.application import Application
 from IPython.core.application import (
     BaseIPythonApplication, base_flags
 )
 from IPython.core.profiledir import ProfileDir
-from IPython.utils.path import get_ipython_dir, get_ipython_package_dir
-from IPython.utils.traitlets import Unicode, Bool, Dict
+from IPython.utils.importstring import import_item
+from IPython.paths import get_ipython_dir, get_ipython_package_dir
+from traitlets import Unicode, Bool, Dict, observe
 
 #-----------------------------------------------------------------------------
 # Constants
@@ -95,29 +96,31 @@ ipython locate profile foo # print the path to the directory for profile 'foo'
 
 def list_profiles_in(path):
     """list profiles in a given root directory"""
-    files = os.listdir(path)
     profiles = []
+
+    # for python 3.6+ rewrite to: with os.scandir(path) as dirlist:
+    files = os.scandir(path)
     for f in files:
-        full_path = os.path.join(path, f)
-        if os.path.isdir(full_path) and f.startswith('profile_'):
-            profiles.append(f.split('_',1)[-1])
+        if f.is_dir() and f.name.startswith('profile_'):
+            profiles.append(f.name.split('_', 1)[-1])
     return profiles
 
 
 def list_bundled_profiles():
     """list profiles that are bundled with IPython."""
-    path = os.path.join(get_ipython_package_dir(), u'config', u'profile')
-    files = os.listdir(path)
+    path = os.path.join(get_ipython_package_dir(), u'core', u'profile')
     profiles = []
+
+    # for python 3.6+ rewrite to: with os.scandir(path) as dirlist:
+    files =  os.scandir(path)
     for profile in files:
-        full_path = os.path.join(path, profile)
-        if os.path.isdir(full_path) and profile != "__pycache__":
-            profiles.append(profile)
+        if profile.is_dir() and profile.name != "__pycache__":
+            profiles.append(profile.name)
     return profiles
 
 
 class ProfileLocate(BaseIPythonApplication):
-    description = """print the path an IPython profile dir"""
+    description = """print the path to an IPython profile dir"""
     
     def parse_command_line(self, argv=None):
         super(ProfileLocate, self).parse_command_line(argv)
@@ -125,7 +128,7 @@ class ProfileLocate(BaseIPythonApplication):
             self.profile = self.extra_args[0]
     
     def start(self):
-        print self.profile_dir.location
+        print(self.profile_dir.location)
 
 
 class ProfileList(Application):
@@ -143,48 +146,49 @@ class ProfileList(Application):
         )
     ))
 
-    ipython_dir = Unicode(get_ipython_dir(), config=True,
+    ipython_dir = Unicode(get_ipython_dir(),
         help="""
         The name of the IPython directory. This directory is used for logging
         configuration (through profiles), history storage, etc. The default
         is usually $HOME/.ipython. This options can also be specified through
         the environment variable IPYTHONDIR.
         """
-    )
+    ).tag(config=True)
 
 
     def _print_profiles(self, profiles):
         """print list of profiles, indented."""
         for profile in profiles:
-            print '    %s' % profile
+            print('    %s' % profile)
 
     def list_profile_dirs(self):
         profiles = list_bundled_profiles()
         if profiles:
-            print
-            print "Available profiles in IPython:"
+            print()
+            print("Available profiles in IPython:")
             self._print_profiles(profiles)
-            print
-            print "    The first request for a bundled profile will copy it"
-            print "    into your IPython directory (%s)," % self.ipython_dir
-            print "    where you can customize it."
+            print()
+            print("    The first request for a bundled profile will copy it")
+            print("    into your IPython directory (%s)," % self.ipython_dir)
+            print("    where you can customize it.")
         
         profiles = list_profiles_in(self.ipython_dir)
         if profiles:
-            print
-            print "Available profiles in %s:" % self.ipython_dir
+            print()
+            print("Available profiles in %s:" % self.ipython_dir)
             self._print_profiles(profiles)
         
-        profiles = list_profiles_in(os.getcwdu())
+        profiles = list_profiles_in(os.getcwd())
         if profiles:
-            print
-            print "Available profiles in current directory (%s):" % os.getcwdu()
-            self._print_profiles(profiles)
-        
-        print
-        print "To use any of the above profiles, start IPython with:"
-        print "    ipython --profile=<name>"
-        print
+            print()
+            print(
+                "Profiles from CWD have been removed for security reason, see CVE-2022-21699:"
+            )
+
+        print()
+        print("To use any of the above profiles, start IPython with:")
+        print("    ipython --profile=<name>")
+        print()
 
     def start(self):
         self.list_profile_dirs()
@@ -205,19 +209,24 @@ class ProfileCreate(BaseIPythonApplication):
     name = u'ipython-profile'
     description = create_help
     examples = _create_examples
-    auto_create = Bool(True, config=False)
+    auto_create = Bool(True).tag(config=True)
+    def _log_format_default(self):
+        return "[%(name)s] %(message)s"
 
     def _copy_config_files_default(self):
         return True
 
-    parallel = Bool(False, config=True,
-        help="whether to include parallel computing config files")
-    def _parallel_changed(self, name, old, new):
+    parallel = Bool(False,
+        help="whether to include parallel computing config files"
+    ).tag(config=True)
+
+    @observe('parallel')
+    def _parallel_changed(self, change):
         parallel_files = [   'ipcontroller_config.py',
                             'ipengine_config.py',
                             'ipcluster_config.py'
                         ]
-        if new:
+        if change['new']:
             for cf in parallel_files:
                 self.config_files.append(cf)
         else:
@@ -234,41 +243,38 @@ class ProfileCreate(BaseIPythonApplication):
     flags = Dict(create_flags)
 
     classes = [ProfileDir]
+    
+    def _import_app(self, app_path):
+        """import an app class"""
+        app = None
+        name = app_path.rsplit('.', 1)[-1]
+        try:
+            app = import_item(app_path)
+        except ImportError:
+            self.log.info("Couldn't import %s, config file will be excluded", name)
+        except Exception:
+            self.log.warning('Unexpected error importing %s', name, exc_info=True)
+        return app
 
     def init_config_files(self):
         super(ProfileCreate, self).init_config_files()
         # use local imports, since these classes may import from here
         from IPython.terminal.ipapp import TerminalIPythonApp
         apps = [TerminalIPythonApp]
-        try:
-            from IPython.qt.console.qtconsoleapp import IPythonQtConsoleApp
-        except Exception:
-            # this should be ImportError, but under weird circumstances
-            # this might be an AttributeError, or possibly others
-            # in any case, nothing should cause the profile creation to crash.
-            pass
-        else:
-            apps.append(IPythonQtConsoleApp)
-        try:
-            from IPython.html.notebookapp import NotebookApp
-        except ImportError:
-            pass
-        except Exception:
-            self.log.debug('Unexpected error when importing NotebookApp',
-                           exc_info=True
-            )
-        else:
-            apps.append(NotebookApp)
+        for app_path in (
+            'ipykernel.kernelapp.IPKernelApp',
+        ):
+            app = self._import_app(app_path)
+            if app is not None:
+                apps.append(app)
         if self.parallel:
-            from IPython.parallel.apps.ipcontrollerapp import IPControllerApp
-            from IPython.parallel.apps.ipengineapp import IPEngineApp
-            from IPython.parallel.apps.ipclusterapp import IPClusterStart
-            from IPython.parallel.apps.iploggerapp import IPLoggerApp
+            from ipyparallel.apps.ipcontrollerapp import IPControllerApp
+            from ipyparallel.apps.ipengineapp import IPEngineApp
+            from ipyparallel.apps.ipclusterapp import IPClusterStart
             apps.extend([
                 IPControllerApp,
                 IPEngineApp,
                 IPClusterStart,
-                IPLoggerApp,
             ])
         for App in apps:
             app = App()
@@ -276,8 +282,8 @@ class ProfileCreate(BaseIPythonApplication):
             app.log = self.log
             app.overwrite = self.overwrite
             app.copy_config_files=True
-            app.profile = self.profile
-            app.init_profile_dir()
+            app.ipython_dir=self.ipython_dir
+            app.profile_dir=self.profile_dir
             app.init_config_files()
 
     def stage_default_config_file(self):
@@ -285,22 +291,22 @@ class ProfileCreate(BaseIPythonApplication):
 
 
 class ProfileApp(Application):
-    name = u'ipython-profile'
+    name = u'ipython profile'
     description = profile_help
     examples = _main_examples
 
     subcommands = Dict(dict(
         create = (ProfileCreate, ProfileCreate.description.splitlines()[0]),
         list = (ProfileList, ProfileList.description.splitlines()[0]),
+        locate = (ProfileLocate, ProfileLocate.description.splitlines()[0]),
     ))
 
     def start(self):
         if self.subapp is None:
-            print "No subcommand specified. Must specify one of: %s"%(self.subcommands.keys())
-            print
+            print("No subcommand specified. Must specify one of: %s"%(self.subcommands.keys()))
+            print()
             self.print_description()
             self.print_subcommands()
             self.exit(1)
         else:
             return self.subapp.start()
-

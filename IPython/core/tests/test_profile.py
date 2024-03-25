@@ -15,51 +15,48 @@ Authors
 * MinRK
 
 """
-from __future__ import absolute_import
 
 #-----------------------------------------------------------------------------
 # Imports
 #-----------------------------------------------------------------------------
 
-import os
 import shutil
 import sys
 import tempfile
-
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-import nose.tools as nt
+import pytest
 
-from IPython.core.profileapp import list_profiles_in, list_bundled_profiles
+from IPython.core.profileapp import list_bundled_profiles, list_profiles_in
 from IPython.core.profiledir import ProfileDir
-
 from IPython.testing import decorators as dec
 from IPython.testing import tools as tt
-from IPython.utils import py3compat
-
+from IPython.utils.process import getoutput
 
 #-----------------------------------------------------------------------------
 # Globals
 #-----------------------------------------------------------------------------
-TMP_TEST_DIR = tempfile.mkdtemp()
-HOME_TEST_DIR = os.path.join(TMP_TEST_DIR, "home_test_dir")
-IP_TEST_DIR = os.path.join(HOME_TEST_DIR,'.ipython')
+TMP_TEST_DIR = Path(tempfile.mkdtemp())
+HOME_TEST_DIR = TMP_TEST_DIR / "home_test_dir"
+IP_TEST_DIR = HOME_TEST_DIR / ".ipython"
 
 #
 # Setup/teardown functions/decorators
 #
 
-def setup():
+def setup_module():
     """Setup test environment for the module:
 
             - Adds dummy home dir tree
     """
     # Do not mask exceptions here.  In particular, catching WindowsError is a
     # problem because that exception is only defined on Windows...
-    os.makedirs(IP_TEST_DIR)
+    (Path.cwd() / IP_TEST_DIR).mkdir(parents=True)
 
 
-def teardown():
+def teardown_module():
     """Teardown test environment for the module:
 
             - Remove dummy home dir tree
@@ -73,22 +70,13 @@ def teardown():
 #-----------------------------------------------------------------------------
 # Test functions
 #-----------------------------------------------------------------------------
-def win32_without_pywin32():
-    if sys.platform == 'win32':
-        try:
-            import pywin32
-        except ImportError:
-            return True
-    return False
-    
-
 class ProfileStartupTest(TestCase):
     def setUp(self):
         # create profile dir
-        self.pd = ProfileDir.create_profile_dir_by_name(IP_TEST_DIR, 'test')
-        self.options = ['--ipython-dir', IP_TEST_DIR, '--profile', 'test']
-        self.fname = os.path.join(TMP_TEST_DIR, 'test.py')
-        
+        self.pd = ProfileDir.create_profile_dir_by_name(IP_TEST_DIR, "test")
+        self.options = ["--ipython-dir", IP_TEST_DIR, "--profile", "test"]
+        self.fname = TMP_TEST_DIR / "test.py"
+
     def tearDown(self):
         # We must remove this profile right away so its presence doesn't
         # confuse other tests.
@@ -96,39 +84,42 @@ class ProfileStartupTest(TestCase):
 
     def init(self, startup_file, startup, test):
         # write startup python file
-        with open(os.path.join(self.pd.startup_dir, startup_file), 'w') as f:
+        with open(Path(self.pd.startup_dir) / startup_file, "w", encoding="utf-8") as f:
             f.write(startup)
         # write simple test file, to check that the startup file was run
-        with open(self.fname, 'w') as f:
-            f.write(py3compat.doctest_refactor_print(test))
+        with open(self.fname, "w", encoding="utf-8") as f:
+            f.write(test)
 
     def validate(self, output):
-        tt.ipexec_validate(self.fname, output, '', options=self.options)
+        tt.ipexec_validate(self.fname, output, "", options=self.options)
 
-    @dec.skipif(win32_without_pywin32(), "Test requires pywin32 on Windows")
     def test_startup_py(self):
-        self.init('00-start.py', 'zzz=123\n', 
-                  py3compat.doctest_refactor_print('print zzz\n'))
+        self.init('00-start.py', 'zzz=123\n', 'print(zzz)\n')
         self.validate('123')
 
-    @dec.skipif(win32_without_pywin32(), "Test requires pywin32 on Windows")
     def test_startup_ipy(self):
-        self.init('00-start.ipy', '%profile\n', '')
-        self.validate('test')
+        self.init('00-start.ipy', '%xmode plain\n', '')
+        self.validate('Exception reporting mode: Plain')
 
-    
+
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy"
+    and ((7, 3, 13) < sys.implementation.version < (7, 3, 16)),
+    reason="Unicode issues with scandir on PyPy, see https://github.com/pypy/pypy/issues/4860",
+)
 def test_list_profiles_in():
     # No need to remove these directories and files, as they will get nuked in
     # the module-level teardown.
-    td = tempfile.mkdtemp(dir=TMP_TEST_DIR)
-    td = py3compat.str_to_unicode(td)
-    for name in ('profile_foo', u'profile_ünicode', 'profile_hello', 
-                 'not_a_profile'):
-        os.mkdir(os.path.join(td, name))
-    with open(os.path.join(td, 'profile_file'), 'w') as f:
+    td = Path(tempfile.mkdtemp(dir=TMP_TEST_DIR))
+    for name in ("profile_foo", "profile_hello", "not_a_profile"):
+        Path(td / name).mkdir(parents=True)
+    if dec.unicode_paths:
+        Path(td / "profile_ünicode").mkdir(parents=True)
+
+    with open(td / "profile_file", "w", encoding="utf-8") as f:
         f.write("I am not a profile directory")
     profiles = list_profiles_in(td)
-    
+
     # unicode normalization can turn u'ünicode' into u'u\0308nicode',
     # so only check for *nicode, and that creating a ProfileDir from the
     # name remains valid
@@ -139,12 +130,32 @@ def test_list_profiles_in():
             profiles.remove(p)
             found_unicode = True
             break
-    nt.assert_true(found_unicode)
-    nt.assert_equal(set(profiles), set(['foo', 'hello']))
+    if dec.unicode_paths:
+        assert found_unicode is True
+    assert set(profiles) == {"foo", "hello"}
 
 
 def test_list_bundled_profiles():
     # This variable will need to be updated when a new profile gets bundled
-    bundled_true = [u'cluster', u'math', u'pysh', u'sympy']
     bundled = sorted(list_bundled_profiles())
-    nt.assert_equal(bundled, bundled_true)
+    assert bundled == []
+
+
+def test_profile_create_ipython_dir():
+    """ipython profile create respects --ipython-dir"""
+    with TemporaryDirectory() as td:
+        getoutput(
+            [
+                sys.executable,
+                "-m",
+                "IPython",
+                "profile",
+                "create",
+                "foo",
+                "--ipython-dir=%s" % td,
+            ]
+        )
+        profile_dir = Path(td) / "profile_foo"
+        assert Path(profile_dir).exists()
+        ipython_config = profile_dir / "ipython_config.py"
+        assert Path(ipython_config).exists()

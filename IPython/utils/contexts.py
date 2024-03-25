@@ -1,22 +1,12 @@
 # encoding: utf-8
-"""
-Context managers for temporarily updating dictionaries.
-
-Authors:
-
-* Bradley Froehle
+"""Miscellaneous context managers.
 """
 
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2012  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
+import warnings
 
-#-----------------------------------------------------------------------------
-# Code
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
+
 
 class preserve_keys(object):
     """Preserve a set of keys in a dictionary.
@@ -27,8 +17,8 @@ class preserve_keys(object):
     which did not exist when entering the context manager will be
     deleted.
 
-    Example
-    -------
+    Examples
+    --------
 
     >>> d = {'a': 1, 'b': 2, 'c': 3}
     >>> with preserve_keys(d, 'b', 'c', 'd'):

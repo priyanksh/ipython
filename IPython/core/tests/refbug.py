@@ -16,7 +16,6 @@ test_run.py calls it.
 #-----------------------------------------------------------------------------
 # Module imports
 #-----------------------------------------------------------------------------
-import sys
 
 from IPython import get_ipython
 
@@ -44,4 +43,4 @@ if __name__ == '__main__':
 
     def call_f():
         for func in cache:
-            print 'lowercased:',func().lower()
+            print('lowercased:',func().lower())

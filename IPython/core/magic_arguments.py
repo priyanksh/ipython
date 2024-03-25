@@ -37,6 +37,38 @@ arguments::
           -o OPTION, --option OPTION
                                 An optional argument.
 
+Here is an elaborated example that uses default parameters in `argument` and calls the `args` in the cell magic::
+
+    from IPython.core.magic import register_cell_magic
+    from IPython.core.magic_arguments import (argument, magic_arguments,
+                                            parse_argstring)
+
+
+    @magic_arguments()
+    @argument(
+        "--option",
+        "-o",
+        help=("Add an option here"),
+    )
+    @argument(
+        "--style",
+        "-s",
+        default="foo",
+        help=("Add some style arguments"),
+    )
+    @register_cell_magic
+    def my_cell_magic(line, cell):
+        args = parse_argstring(my_cell_magic, line)
+        print(f"{args.option=}")
+        print(f"{args.style=}")
+        print(f"{cell=}")
+
+In a jupyter notebook, this cell magic can be executed like this::
+
+    %%my_cell_magic -o Hello
+    print("bar")
+    i = 42
+
 Inheritance diagram:
 
 .. inheritance-diagram:: IPython.core.magic_arguments
@@ -50,18 +82,57 @@ Inheritance diagram:
 #
 # The full license is in the file COPYING.txt, distributed with this software.
 #-----------------------------------------------------------------------------
+import argparse
+import re
 
 # Our own imports
-from IPython.external import argparse
 from IPython.core.error import UsageError
+from IPython.utils.decorators import undoc
 from IPython.utils.process import arg_split
 from IPython.utils.text import dedent
 
+NAME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]*$")
+
+@undoc
 class MagicHelpFormatter(argparse.RawDescriptionHelpFormatter):
-    """ A HelpFormatter which dedents but otherwise preserves indentation.
+    """A HelpFormatter with a couple of changes to meet our needs.
     """
+    # Modified to dedent text.
     def _fill_text(self, text, width, indent):
         return argparse.RawDescriptionHelpFormatter._fill_text(self, dedent(text), width, indent)
+
+    # Modified to wrap argument placeholders in <> where necessary.
+    def _format_action_invocation(self, action):
+        if not action.option_strings:
+            metavar, = self._metavar_formatter(action, action.dest)(1)
+            return metavar
+
+        else:
+            parts = []
+
+            # if the Optional doesn't take a value, format is:
+            #    -s, --long
+            if action.nargs == 0:
+                parts.extend(action.option_strings)
+
+            # if the Optional takes a value, format is:
+            #    -s ARGS, --long ARGS
+            else:
+                default = action.dest.upper()
+                args_string = self._format_args(action, default)
+                # IPYTHON MODIFICATION: If args_string is not a plain name, wrap
+                # it in <> so it's valid RST.
+                if not NAME_RE.match(args_string):
+                    args_string = "<%s>" % args_string
+                for option_string in action.option_strings:
+                    parts.append('%s %s' % (option_string, args_string))
+
+            return ', '.join(parts)
+
+    # Override the default prefix ('usage') to our % magic escape,
+    # in a code block.
+    def add_usage(self, usage, actions, groups, prefix="::\n\n  %"):
+        super(MagicHelpFormatter, self).add_usage(usage, actions, groups, prefix)
 
 class MagicArgumentParser(argparse.ArgumentParser):
     """ An ArgumentParser tweaked for use by IPython magics.
@@ -113,15 +184,8 @@ def construct_parser(magic_func):
         if result is not None:
             group = result
 
-    # Replace the starting 'usage: ' with IPython's %.
-    help_text = parser.format_help()
-    if help_text.startswith('usage: '):
-        help_text = help_text.replace('usage: ', '%', 1)
-    else:
-        help_text = '%' + help_text
-
     # Replace the magic function's docstring with the full help text.
-    magic_func.__doc__ = help_text
+    magic_func.__doc__ = parser.format_help()
 
     return parser
 
@@ -187,7 +251,7 @@ class ArgMethodWrapper(ArgDecorator):
 
     """
 
-    _method_name = None
+    _method_name: str
 
     def __init__(self, *args, **kwds):
         self.args = args

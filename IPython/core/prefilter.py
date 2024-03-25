@@ -4,41 +4,27 @@ Prefiltering components.
 
 Prefilters transform user input before it is exec'd by Python.  These
 transforms are used to implement additional syntax such as !ls and %magic.
-
-Authors:
-
-* Brian Granger
-* Fernando Perez
-* Dan Milstein
-* Ville Vainio
 """
 
-#-----------------------------------------------------------------------------
-#  Copyright (C) 2008-2011  The IPython Development Team
-#
-#  Distributed under the terms of the BSD License.  The full license is in
-#  the file COPYING, distributed as part of this software.
-#-----------------------------------------------------------------------------
+# Copyright (c) IPython Development Team.
+# Distributed under the terms of the Modified BSD License.
 
-#-----------------------------------------------------------------------------
-# Imports
-#-----------------------------------------------------------------------------
-
+from keyword import iskeyword
 import re
 
-from IPython.core.autocall import IPyAutocall
-from IPython.config.configurable import Configurable
-from IPython.core.inputsplitter import (
+from .autocall import IPyAutocall
+from traitlets.config.configurable import Configurable
+from .inputtransformer2 import (
     ESC_MAGIC,
     ESC_QUOTE,
     ESC_QUOTE2,
     ESC_PAREN,
 )
-from IPython.core.macro import Macro
-from IPython.core.splitinput import LineInfo
+from .macro import Macro
+from .splitinput import LineInfo
 
-from IPython.utils.traitlets import (
-    List, Integer, Unicode, CBool, Bool, Instance, CRegExp
+from traitlets import (
+    List, Integer, Unicode, Bool, Instance, CRegExp
 )
 
 #-----------------------------------------------------------------------------
@@ -51,13 +37,13 @@ class PrefilterError(Exception):
 
 
 # RegExp to identify potential function names
-re_fun_name = re.compile(r'[a-zA-Z_]([a-zA-Z0-9_.]*) *$')
+re_fun_name = re.compile(r'[^\W\d]([\w.]*) *$')
 
 # RegExp to exclude strings with this start from autocalling.  In
 # particular, all binary operators should be excluded, so that if foo is
 # callable, foo OP bar doesn't become foo(OP bar), which is invalid.  The
 # characters '!=()' don't need to be checked for, as the checkPythonChars
-# routine explicitely does so, to catch direct calls and rebindings of
+# routine explicitly does so, to catch direct calls and rebindings of
 # existing names.
 
 # Warning: the '-' HAS TO BE AT THE END of the first group, otherwise
@@ -80,7 +66,8 @@ def is_shadowed(identifier, ip):
     # This is much safer than calling ofind, which can change state
     return (identifier in ip.user_ns \
             or identifier in ip.user_global_ns \
-            or identifier in ip.ns_table['builtin'])
+            or identifier in ip.ns_table['builtin']\
+            or iskeyword(identifier))
 
 
 #-----------------------------------------------------------------------------
@@ -95,7 +82,7 @@ class PrefilterManager(Configurable):
     prefilter consumes lines of input and produces transformed lines of
     input.
 
-    The iplementation consists of two phases:
+    The implementation consists of two phases:
 
     1. Transformers
     2. Checkers and handlers
@@ -127,27 +114,19 @@ class PrefilterManager(Configurable):
     or :meth:`sort_transformers` method after changing the priority.
     """
 
-    multi_line_specials = CBool(True, config=True)
-    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC')
+    multi_line_specials = Bool(True).tag(config=True)
+    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC', allow_none=True)
 
     def __init__(self, shell=None, **kwargs):
         super(PrefilterManager, self).__init__(shell=shell, **kwargs)
         self.shell = shell
-        self.init_transformers()
+        self._transformers = []
         self.init_handlers()
         self.init_checkers()
 
     #-------------------------------------------------------------------------
     # API for managing transformers
     #-------------------------------------------------------------------------
-
-    def init_transformers(self):
-        """Create the default transformers."""
-        self._transformers = []
-        for transformer_cls in _default_transformers:
-            transformer_cls(
-                shell=self.shell, prefilter_manager=self, parent=self
-            )
 
     def sort_transformers(self):
         """Sort the transformers by priority.
@@ -210,7 +189,7 @@ class PrefilterManager(Configurable):
             self._checkers.remove(checker)
 
     #-------------------------------------------------------------------------
-    # API for managing checkers
+    # API for managing handlers
     #-------------------------------------------------------------------------
 
     def init_handlers(self):
@@ -357,12 +336,12 @@ class PrefilterManager(Configurable):
 class PrefilterTransformer(Configurable):
     """Transform a line of user input."""
 
-    priority = Integer(100, config=True)
+    priority = Integer(100).tag(config=True)
     # Transformers don't currently use shell or prefilter_manager, but as we
     # move away from checkers and handlers, they will need them.
-    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC')
-    prefilter_manager = Instance('IPython.core.prefilter.PrefilterManager')
-    enabled = Bool(True, config=True)
+    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC', allow_none=True)
+    prefilter_manager = Instance('IPython.core.prefilter.PrefilterManager', allow_none=True)
+    enabled = Bool(True).tag(config=True)
 
     def __init__(self, shell=None, prefilter_manager=None, **kwargs):
         super(PrefilterTransformer, self).__init__(
@@ -387,10 +366,10 @@ class PrefilterTransformer(Configurable):
 class PrefilterChecker(Configurable):
     """Inspect an input line and return a handler for that line."""
 
-    priority = Integer(100, config=True)
-    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC')
-    prefilter_manager = Instance('IPython.core.prefilter.PrefilterManager')
-    enabled = Bool(True, config=True)
+    priority = Integer(100).tag(config=True)
+    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC', allow_none=True)
+    prefilter_manager = Instance('IPython.core.prefilter.PrefilterManager', allow_none=True)
+    enabled = Bool(True).tag(config=True)
 
     def __init__(self, shell=None, prefilter_manager=None, **kwargs):
         super(PrefilterChecker, self).__init__(
@@ -409,8 +388,8 @@ class PrefilterChecker(Configurable):
 
 class EmacsChecker(PrefilterChecker):
 
-    priority = Integer(100, config=True)
-    enabled = Bool(False, config=True)
+    priority = Integer(100).tag(config=True)
+    enabled = Bool(False).tag(config=True)
 
     def check(self, line_info):
         "Emacs ipython-mode tags certain input lines."
@@ -422,7 +401,7 @@ class EmacsChecker(PrefilterChecker):
 
 class MacroChecker(PrefilterChecker):
 
-    priority = Integer(250, config=True)
+    priority = Integer(250).tag(config=True)
 
     def check(self, line_info):
         obj = self.shell.user_ns.get(line_info.ifun)
@@ -434,7 +413,7 @@ class MacroChecker(PrefilterChecker):
 
 class IPyAutocallChecker(PrefilterChecker):
 
-    priority = Integer(300, config=True)
+    priority = Integer(300).tag(config=True)
 
     def check(self, line_info):
         "Instances of IPyAutocall in user_ns get autocalled immediately"
@@ -448,7 +427,7 @@ class IPyAutocallChecker(PrefilterChecker):
 
 class AssignmentChecker(PrefilterChecker):
 
-    priority = Integer(600, config=True)
+    priority = Integer(600).tag(config=True)
 
     def check(self, line_info):
         """Check to see if user is assigning to a var for the first time, in
@@ -466,7 +445,7 @@ class AssignmentChecker(PrefilterChecker):
 
 class AutoMagicChecker(PrefilterChecker):
 
-    priority = Integer(700, config=True)
+    priority = Integer(700).tag(config=True)
 
     def check(self, line_info):
         """If the ifun is magic, and automagic is on, run it.  Note: normal,
@@ -488,25 +467,9 @@ class AutoMagicChecker(PrefilterChecker):
         return self.prefilter_manager.get_handler_by_name('magic')
 
 
-class AliasChecker(PrefilterChecker):
-
-    priority = Integer(800, config=True)
-
-    def check(self, line_info):
-        "Check if the initital identifier on the line is an alias."
-        # Note: aliases can not contain '.'
-        head = line_info.ifun.split('.',1)[0]
-        if line_info.ifun not in self.shell.alias_manager \
-               or head not in self.shell.alias_manager \
-               or is_shadowed(head, self.shell):
-            return None
-
-        return self.prefilter_manager.get_handler_by_name('alias')
-
-
 class PythonOpsChecker(PrefilterChecker):
 
-    priority = Integer(900, config=True)
+    priority = Integer(900).tag(config=True)
 
     def check(self, line_info):
         """If the 'rest' of the line begins with a function call or pretty much
@@ -521,12 +484,14 @@ class PythonOpsChecker(PrefilterChecker):
 
 class AutocallChecker(PrefilterChecker):
 
-    priority = Integer(1000, config=True)
+    priority = Integer(1000).tag(config=True)
 
-    function_name_regexp = CRegExp(re_fun_name, config=True,
-        help="RegExp to identify potential function names.")
-    exclude_regexp = CRegExp(re_exclude_auto, config=True,
-        help="RegExp to exclude strings with this start from autocalling.")
+    function_name_regexp = CRegExp(re_fun_name,
+        help="RegExp to identify potential function names."
+        ).tag(config=True)
+    exclude_regexp = CRegExp(re_exclude_auto,
+        help="RegExp to exclude strings with this start from autocalling."
+        ).tag(config=True)
 
     def check(self, line_info):
         "Check if the initial word/function is callable and autocall is on."
@@ -534,13 +499,21 @@ class AutocallChecker(PrefilterChecker):
             return None
 
         oinfo = line_info.ofind(self.shell) # This can mutate state via getattr
-        if not oinfo['found']:
+        if not oinfo.found:
             return None
 
-        if callable(oinfo['obj']) \
-               and (not self.exclude_regexp.match(line_info.the_rest)) \
-               and self.function_name_regexp.match(line_info.ifun):
-            return self.prefilter_manager.get_handler_by_name('auto')
+        ignored_funs = ['b', 'f', 'r', 'u', 'br', 'rb', 'fr', 'rf']
+        ifun = line_info.ifun
+        line = line_info.line
+        if ifun.lower() in ignored_funs and (line.startswith(ifun + "'") or line.startswith(ifun + '"')):
+            return None
+
+        if (
+            callable(oinfo.obj)
+            and (not self.exclude_regexp.match(line_info.the_rest))
+            and self.function_name_regexp.match(line_info.ifun)
+        ):
+            return self.prefilter_manager.get_handler_by_name("auto")
         else:
             return None
 
@@ -551,11 +524,14 @@ class AutocallChecker(PrefilterChecker):
 
 
 class PrefilterHandler(Configurable):
-
-    handler_name = Unicode('normal')
-    esc_strings = List([])
-    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC')
-    prefilter_manager = Instance('IPython.core.prefilter.PrefilterManager')
+    handler_name = Unicode("normal")
+    esc_strings: List = List([])
+    shell = Instance(
+        "IPython.core.interactiveshell.InteractiveShellABC", allow_none=True
+    )
+    prefilter_manager = Instance(
+        "IPython.core.prefilter.PrefilterManager", allow_none=True
+    )
 
     def __init__(self, shell=None, prefilter_manager=None, **kwargs):
         super(PrefilterHandler, self).__init__(
@@ -591,20 +567,6 @@ class PrefilterHandler(Configurable):
         return "<%s(name=%s)>" % (self.__class__.__name__, self.handler_name)
 
 
-class AliasHandler(PrefilterHandler):
-
-    handler_name = Unicode('alias')
-
-    def handle(self, line_info):
-        """Handle alias input lines. """
-        transformed = self.shell.alias_manager.expand_aliases(line_info.ifun,line_info.the_rest)
-        # pre is needed, because it carries the leading whitespace.  Otherwise
-        # aliases won't work in indented sections.
-        line_out = '%sget_ipython().system(%r)' % (line_info.pre_whitespace, transformed)
-
-        return line_out
-
-
 class MacroHandler(PrefilterHandler):
     handler_name = Unicode("macro")
 
@@ -624,8 +586,11 @@ class MagicHandler(PrefilterHandler):
         """Execute magic functions."""
         ifun    = line_info.ifun
         the_rest = line_info.the_rest
-        cmd = '%sget_ipython().magic(%r)' % (line_info.pre_whitespace,
-                                                    (ifun + " " + the_rest))
+        #Prepare arguments for get_ipython().run_line_magic(magic_name, magic_args)
+        t_arg_s = ifun + " " + the_rest
+        t_magic_name, _, t_magic_arg_s = t_arg_s.partition(' ')
+        t_magic_name = t_magic_name.lstrip(ESC_MAGIC)
+        cmd = '%sget_ipython().run_line_magic(%r, %r)' % (line_info.pre_whitespace, t_magic_name, t_magic_arg_s)
         return cmd
 
 
@@ -639,11 +604,9 @@ class AutoHandler(PrefilterHandler):
         line    = line_info.line
         ifun    = line_info.ifun
         the_rest = line_info.the_rest
-        pre     = line_info.pre
         esc     = line_info.esc
         continue_prompt = line_info.continue_prompt
-        obj = line_info.ofind(self.shell)['obj']
-        #print 'pre <%s> ifun <%s> rest <%s>' % (pre,ifun,the_rest)  # dbg
+        obj = line_info.ofind(self.shell).obj
 
         # This should only be active for single-line input!
         if continue_prompt:
@@ -668,7 +631,7 @@ class AutoHandler(PrefilterHandler):
         elif esc == ESC_PAREN:
             newcmd = '%s(%s)' % (ifun,",".join(the_rest.split()))
         else:
-            # Auto-paren.       
+            # Auto-paren.
             if force_auto:
                 # Don't rewrite if it is already a call.
                 do_rewrite = not the_rest.startswith('(')
@@ -689,11 +652,11 @@ class AutoHandler(PrefilterHandler):
                 if the_rest.endswith(';'):
                     newcmd = '%s(%s);' % (ifun.rstrip(),the_rest[:-1])
                 else:
-                    newcmd = '%s(%s)' % (ifun.rstrip(), the_rest)                
+                    newcmd = '%s(%s)' % (ifun.rstrip(), the_rest)
             else:
                 normal_handler = self.prefilter_manager.get_handler_by_name('normal')
                 return normal_handler.handle(line_info)
-        
+
         # Display the rewritten call
         if auto_rewrite:
             self.shell.auto_rewrite_input(newcmd)
@@ -721,23 +684,18 @@ class EmacsHandler(PrefilterHandler):
 #-----------------------------------------------------------------------------
 
 
-_default_transformers = [
-]
-
 _default_checkers = [
     EmacsChecker,
     MacroChecker,
     IPyAutocallChecker,
     AssignmentChecker,
     AutoMagicChecker,
-    AliasChecker,
     PythonOpsChecker,
     AutocallChecker
 ]
 
 _default_handlers = [
     PrefilterHandler,
-    AliasHandler,
     MacroHandler,
     MagicHandler,
     AutoHandler,

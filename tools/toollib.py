@@ -1,15 +1,13 @@
 """Various utilities common to IPython release and maintenance tools.
 """
-from __future__ import print_function
 
 # Library imports
 import os
 import sys
 
-from distutils.dir_util import remove_tree
+from pathlib import Path
 
 # Useful shorthands
-pjoin = os.path.join
 cd = os.chdir
 
 # Constants
@@ -21,25 +19,8 @@ archive = '%s:%s' % (archive_user, archive_dir)
 
 # Build commands
 # Source dists
-sdists = './setup.py sdist --formats=gztar,zip'
-# Eggs
-eggs = './setupegg.py bdist_egg'
+build_command = "{python} -m build".format(python=sys.executable)
 
-# Windows builds.
-# We do them separately, so that the extra Windows scripts don't get pulled
-# into Unix builds (setup.py has code which checks for bdist_wininst).  Note
-# that the install scripts args are added to the main distutils call in
-# setup.py, so they don't need to be passed here.
-#
-# The Windows 64-bit installer can't be built by a Linux/Mac Python because ofa
-# bug in distutils:  http://bugs.python.org/issue6792.
-# So we have to build it with a wine-installed native Windows Python...
-win_builds = ["python setup.py bdist_wininst "
-              "--install-script=ipython_win_post_install.py",
-              r"%s/.wine/dosdevices/c\:/Python32/python.exe setup.py build "
-              "--plat-name=win-amd64 bdist_wininst "
-              "--install-script=ipython_win_post_install.py" %
-              os.environ['HOME'] ]
 
 # Utility functions
 def sh(cmd):
@@ -50,30 +31,18 @@ def sh(cmd):
     if stat:
         raise SystemExit("Command %s failed with code: %s" % (cmd, stat))
 
-# Backwards compatibility
-c = sh
-
 def get_ipdir():
     """Get IPython directory from command line, or assume it's the one above."""
 
     # Initialize arguments and check location
-    try:
-        ipdir = sys.argv[1]
-    except IndexError:
-        ipdir = '..'
-
-    ipdir = os.path.abspath(ipdir)
+    ipdir = Path(__file__).parent / os.pardir
+    ipdir = ipdir.resolve()
 
     cd(ipdir)
-    if not os.path.isdir('IPython') and os.path.isfile('setup.py'):
-        raise SystemExit('Invalid ipython directory: %s' % ipdir)
+    if not Path("IPython").is_dir() and Path("setup.py").is_file():
+        raise SystemExit("Invalid ipython directory: %s" % ipdir)
     return ipdir
 
-
-def compile_tree():
-    """Compile all Python files below current directory."""
-    stat = os.system('python -m compileall .')
-    if stat:
-        msg = '*** ERROR: Some Python files in tree do NOT compile! ***\n'
-        msg += 'See messages above for the actual file that produced it.\n'
-        raise SystemExit(msg)
+def execfile(fname, globs, locs=None):
+    locs = locs or globs
+    exec(compile(open(fname, encoding="utf-8").read(), fname, "exec"), globs, locs)
