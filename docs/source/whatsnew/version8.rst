@@ -1,6 +1,114 @@
 ============
  8.x Series
 ============
+.. _version 8.26:
+
+IPython 8.26
+============
+
+Hey, the release of IPython for this month is here! (I know you were waiting for it)
+
+- :ghpull:`14453` bugfix for call to structured_traceback
+
+- :ghpull:`14466` fixed honoring custom repr for NamedTuple if assigned by partialmethod
+
+- :ghpull:`14451` Convert matplotlib gui name in enable_gui
+
+As usual you can find the full list of PRs on GitHub under `the 8.26
+<https://github.com/ipython/ipython/milestone/133?closed=1>`__ milestone.
+
+Thanks
+------
+
+Thanks to the `D. E. Shaw group <https://deshaw.com/>`__ for sponsoring
+work on IPython and related libraries.
+
+
+.. _version 8.25:
+
+IPython 8.25
+============
+
+Mostly internal changes for this end of may release of IPython.
+
+We'll count about a dozen PRs for this moth, with small bugfixes related to
+matplotlib fixes.
+
+Of notable interest,
+
+ - :ghpull:`14426` replaces the unicode micro symbol with greek letter mu,
+   visually identical but should fix nfkc normalisations issues.
+
+ - :ghpull:`14444` introduces ``intersphinx_registry``  as a new dependency
+   which is recommended only to build documentation.
+
+As usual you can find the full list of PRs on GitHub under `the 8.25
+<https://github.com/ipython/ipython/milestone/132?closed=1>`__ milestone.
+
+Thanks
+------
+
+Thanks to the `D. E. Shaw group <https://deshaw.com/>`__ for sponsoring
+work on IPython and related libraries.
+
+
+.. _version 8.24:
+
+IPython 8.24
+============
+
+Back on regular release schedule, as usual month releases are relatively tiny.
+
+The biggest change is the move of the matplotlib backend handling from IPython
+to matplotlib. :ghpull:`14371` :ghpull:`14403`.
+
+We will note:
+
+ - pytest 8 compatibility :ghpull:`14413`
+ - ``typing-extension`` now needs 4.6 or newer. It was already the case, but not
+   explicated. :ghpull:`14380`
+ - Attempt to speed running code under debugger in some cases. :ghpull:`14386`
+   :ghpull:`14418`.
+ - Multiple fixes to documentation for ipyparallel, simple_prompt and emacs
+   :ghpull:`14384` :ghpull:`14404` :ghpull:`14407`
+ - Maintenance and cleanup of debugger :ghpull:`14387` :ghpull:`14393`
+
+As usual you can find the full list of PRs on GitHub under `the 8.24
+<https://github.com/ipython/ipython/milestone/131?closed=1>`__ milestone.
+
+Thanks
+------
+
+Thanks to the `D. E. Shaw group <https://deshaw.com/>`__ for sponsoring
+work on IPython and related libraries.
+
+
+.. _version 8.23:
+
+IPython 8.23
+============
+
+Super tiny release of IPython on Sunday – a bit later than usual, which is also
+`🏳️‍⚧️ International Transgender Day of Visibility🏳️‍⚧️
+<https://en.wikipedia.org/wiki/International_Transgender_Day_of_Visibility>`_ –
+so a though for you on this day, you matter and you are valid [1]_.
+
+This is a minuscule release with only 5 Pull requests.
+
+Main change is :ghpull:`14357` which improve inference from return type
+annotations in completer and the introduction of the optional target
+``ipython[matplotlib]`` to explicitly request the matplotlib optional
+dependencies.
+
+As usual you can find the full list of PRs on GitHub under `the 8.23
+<https://github.com/ipython/ipython/milestone/130?closed=1>`__ milestone.
+
+Thanks
+------
+
+Thanks to the `D. E. Shaw group <https://deshaw.com/>`__ for sponsoring
+work on IPython and related libraries.
+
 
 .. _version 8.22:
 
@@ -2204,3 +2312,7 @@ The following attribute/methods have been removed::
     - IPython.terminal.ipapp.LocateIPythonApp.initialize_subcommand
     - IPython.terminal.ipapp.TerminalIPythonApp.deprecated_subcommands
     - IPython.terminal.ipapp.TerminalIPythonApp.initialize_subcommand
+
+------
+
+.. [1] If this make you incomfortable feel free to not use IPython 8.23.
