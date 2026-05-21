@@ -1,6 +1,123 @@
-=======================
-Specific config details
-=======================
+==============================
+Specific configuration details
+==============================
+
+.. _llm_suggestions:
+
+LLM Suggestions
+===============
+
+Starting with 9.0, IPython will be able to use LLM providers to suggest code in
+the terminal. This requires a recent version of prompt_toolkit in order to allow
+multiline suggestions. There are currently a number of limitations, and feedback
+on the API is welcome.
+
+Unlike many of IPython features, this is not enabled by default and requires
+multiple configuration options to be set to properly work:
+
+ - Set a keybinding to trigger LLM suggestions. Due to terminal limitations
+   across platforms and emulators, it is difficult to provide a default
+   keybinding. Note that not all keybindings are availables, in particular all
+   the `Ctrl-Enter`, `Alt-backslash` and `Ctrl-Shift-Enter` are not available
+   without integration with your terminal emulator.
+
+ - Chose a LLM `provider`, usually from Jupyter-AI. This will be the interface
+   between IPython itself, and the LLM – that may be local or in on a server.
+
+ - Configure said provider with models, API keys, etc – this will depend on the
+   provider, and you will have to refer to Jupyter-AI documentation, and/or your
+   LLM documentation.
+
+
+While setting up IPython to use a real LLM, you can refer to
+``examples/auto_suggest_llm.py`` that both provide an example of how to set up
+IPython to use a Fake LLM provider, this can help ensure that the full setup is
+working before switching to a real LLM provider.
+
+
+Setup a keybinding
+------------------
+
+You may want to refer on how to setup a keybinding in IPython, but in short you
+want to bind the ``IPython:auto_suggest.llm_autosuggestion`` command to a
+keybinding, and have it active only when the default buffer isi focused, and
+when using the NavigableSuggestions suggestter (this is the default suggestter,
+the one that is history and LLM aware). Thus the ``navigable_suggestions &
+default_buffer_focused`` filter should be used.
+
+Usually ``Ctrl-Q`` on macos is an available shortcut, note that is does use
+``Ctrl``, and not ``Command``.
+
+The following example will bind ``Ctrl-Q`` to the ``llm_autosuggestion``
+command, with the suggested filter::
+
+    c.TerminalInteractiveShell.shortcuts = [
+        {
+            "new_keys": ["c-q"],
+            "command": "IPython:auto_suggest.llm_autosuggestion",
+            "new_filter": "navigable_suggestions & default_buffer_focused",
+            "create": True,
+        },
+    ]
+
+
+Choose a LLM provider
+---------------------
+
+Set the  ``TerminalInteractiveShell.llm_provider_class`` trait to the fully
+qualified name of the Provider you like, when testing from inside the IPython
+source tree, you can use
+``"examples.auto_suggest_llm.ExampleCompletionProvider"`` This will always
+stream an extract of the Little Prince by Antoine de Saint-Exupéry, and will not
+require any API key or real LLM.
+
+
+In your configuration file adapt the following line to your needs:
+
+.. code-block:: python
+
+    c.TerminalInteractiveShell.llm_provider_class = "examples.auto_suggest_llm.ExampleCompletionProvider"
+
+Configure the provider
+----------------------
+
+It the provider needs to be passed parameters at initialization, you can do so
+by setting the ``llm_construction_kwargs`` traitlet.
+
+.. code-block:: python
+
+    c.TerminalInteractiveShell.llm_constructor_kwargs = {"model": "skynet"}
+
+This will depend on the provider you chose, and you will have to refer to
+the provider documentation.
+
+Extra configuration may be needed by setting environment variables, this will
+again depend on the provider you chose, and you will have to refer to the
+provider documentation.
+
+LLM Context
+-----------
+
+The option ``c.TerminalInteractiveShell.llm_prefix_from_history`` controls the
+context the ``Provider`` gets when trying to complete. See the help of this
+options (``ipython --help-all``)::
+
+    Fully Qualifed name of a function that takes an IPython history manager and
+    return a prefix to pass the llm provider in addition to the current buffer
+    text.
+
+    You can use:
+
+     - no_prefix
+     - input_history
+
+    As default value. `input_history` (default),  will use all the input history
+    of current IPython session
+
+
+
+
+
 
 .. _custom_prompts:
 
@@ -49,7 +166,8 @@ in the input prompt:
 
 .. code-block:: python
 
-    from IPython.terminal.prompts import Prompts, Token
+    from IPython.terminal.prompts import Prompts
+    from pygments.token import Token
     import os
 
     class MyPrompt(Prompts):
@@ -88,32 +206,51 @@ style; see below for more details. The tokens used in the default prompts are
 Terminal Colors
 ===============
 
-.. versionchanged:: 5.0
+.. versionchanged:: 9.0
 
-There are two main configuration options controlling colours.
+IPython 9.0 changed almost all of the  color handling, which is now referred to
+as **themes**. A Theme can do a bit more than purely colors, as it can handle
+bold, italic and basically any style that ``pygments`` support.  Themes also
+support a number of ``Symbols``, which allows you to – for example – change the
+shape of the arrow that mark the current frame and line numbers in the debugger
+and the tracebacks. 
 
-``InteractiveShell.colors`` sets the colour of tracebacks and object info (the
-output from e.g. ``zip?``). It may also affect other things if the option below
-is set to ``'legacy'``. It has four case-insensitive values:
-``'nocolor', 'neutral', 'linux', 'lightbg'``. The default is *neutral*, which
-should be legible on either dark or light terminal backgrounds. *linux* is
-optimised for dark backgrounds and *lightbg* for light ones.
+Most of the various IPython options that were used pre 9.0 have been renamed,
+with a exceptions a few, and most classes  that deal with themes can, now take a
+``theme_name`` parameter.
 
-``TerminalInteractiveShell.highlighting_style`` determines prompt colours and
-syntax highlighting. It takes the name (as a string) or class (as a subclass of
-``pygments.style.Style``) of a Pygments style, or the special value ``'legacy'``
-to pick a style in accordance with ``InteractiveShell.colors``.
+To reflect this, the  ``--colors`` flag now is also aliased to ``--theme``.
 
-You can see the Pygments styles available on your system by running::
+The default themes included are the same, except lowercase, for ease of typing. 
 
-    from pygments.styles import get_all_styles
-    list(get_all_styles())
+``'nocolor', 'neutral', 'linux', 'lightbg', 'gruvbox-dark'``, with the addition of ``'pride'``
+to celebrate the inclusively of this project (I welcome update to the pride
+theme as I'm not a designer myself). 
 
-Additionally, ``TerminalInteractiveShell.highlighting_style_overrides`` can override
-specific styles in the highlighting. It should be a dictionary mapping Pygments
-token types to strings defining the style. See `Pygments' documentation
-<http://pygments.org/docs/styles/#creating-own-styles>`__ for the language used
-to define styles.
+In addition, the ``--theme=pride`` theme, is the first to make use of unicode
+symbols for the traceback separation line, and the debugger and traceback arrow, 
+as well as making some use of ``bold``, and ``italic`` formatting, and not limit
+itself to the 16 base ANSI colors.
+
+Theme details
+-------------
+
+We encourage you to contribute themes, and to distribute them, 
+while currently you need to modify source code to add a theme, it should be
+possible to load theme from Json, Yaml, or any other declarative file type. 
+
+Since IPython 9.0, most of IPython internal code emit a sequence of `(Token
+Type, string)`, which is fed through pygments, and a theme is mapping from those
+token types to a style. For example: ``Token.Prompt : '#ansired underline'``, or
+``Token.Filename : 'bg:#A30262``.
+
+For simplicity, a theme can be derived from from a pygments style (which will
+give the basic code highlighting).
+
+A theme can also define a few symbols (see the source for how), for example
+``arrow_body``, and ``arrow_head``, can help customising line indicators.
+
+
 
 Colors in the pager
 -------------------

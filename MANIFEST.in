@@ -1,6 +1,4 @@
 include README.rst
-include COPYING.rst
-include LICENSE
 include setupbase.py
 include _build_meta.py
 include MANIFEST.in
@@ -9,7 +7,10 @@ include .flake8
 include .pre-commit-config.yaml
 include long_description.rst
 
+recursive-include tests *
+
 recursive-exclude tools *
+
 exclude tools
 exclude CONTRIBUTING.md
 exclude .editorconfig

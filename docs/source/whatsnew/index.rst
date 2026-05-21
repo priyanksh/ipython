@@ -19,8 +19,9 @@ What's new in IPython
 .. only:: ipydev
 
    Development version in-progress features:
-   
+
    .. toctree::
+      :maxdepth: 1
 
       development
 
@@ -33,6 +34,7 @@ development work they do here in a user friendly format.
 .. toctree::
    :maxdepth: 1
 
+   version9
    version8
    github-stats-8
    version7
@@ -61,13 +63,6 @@ development work they do here in a user friendly format.
    version0.8
 
 ..
-   this makes a hidden toctree that keeps sphinx from complaining about
-   documents included nowhere when building docs for stable
-   We place it at the end as it will still be reachable via prev/next links.
-   
-.. only:: ipystable
-
-   .. toctree::
-      :hidden:
-
-      development
+   The development.rst is included in the ipydev toctree above.
+   For stable builds, it's automatically excluded by the only directive,
+   so no hidden toctree is needed here.

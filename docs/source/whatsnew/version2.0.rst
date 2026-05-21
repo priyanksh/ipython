@@ -175,8 +175,6 @@ IPython previously supported Python 3 by running 2to3 during setup. We
 have now switched to a single codebase which runs natively on Python 2.7
 and 3.3.
 
-For notes on how to maintain this, see :doc:`/development/pycompat`.
-
 Selecting matplotlib figure formats
 -----------------------------------
 
@@ -235,8 +233,7 @@ New IPython console lexer
 -------------------------
 
 The IPython console lexer has been rewritten and now supports tracebacks
-and customized input/output prompts. See the :ref:`new lexer docs <console_lexer>`
-for details.
+and customized input/output prompts.
 
 DisplayFormatter changes
 ------------------------

@@ -37,23 +37,11 @@ if __name__ == '__main__':
         r"\.lib\.inputhook.+",
         r"\.ipdoctest",
         r"\.testing\.plugin",
-        # Backwards compat import for lib.lexers
-        r"\.nbconvert\.utils\.lexers",
         # We document this manually.
         r"\.utils\.py3compat",
         # These are exposed in display
         r"\.core\.display",
         r"\.lib\.display",
-        # Shims
-        r"\.config",
-        r"\.consoleapp",
-        r"\.frontend$",
-        r"\.html",
-        r"\.nbconvert",
-        r"\.nbformat",
-        r"\.parallel",
-        r"\.qt",
-        # this is deprecated.
         r"\.utils\.version",
         # Private APIs (there should be a lot more here)
         r"\.terminal\.ptutils",
